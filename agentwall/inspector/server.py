@@ -25,7 +25,9 @@ async def _lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="AgentWall Inspector", version="0.1.0", docs_url="/api/docs", lifespan=_lifespan)
+from agentwall import __version__
+
+app = FastAPI(title="AgentWall Inspector",version=__version__,docs_url="/api/docs",lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
