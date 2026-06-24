@@ -12,18 +12,69 @@
 
 ## Installation
 
+Choose **ONE** installation option.
+
+### Core Package
+
 ```bash
 pip install agentwall
 ```
 
-### With Framework Integrations
+Recommended if:
+
+* You use a custom agent framework
+* You only need the AgentWall SDK
+* You do not use OpenAI Agents SDK, LangChain, or CrewAI
+
+### OpenAI Agents SDK Integration
 
 ```bash
-pip install agentwall[openai-agents]   # OpenAI Agents SDK
-pip install agentwall[langchain]       # LangChain
-pip install agentwall[crewai]          # CrewAI
-pip install agentwall[integrations]    # All frameworks
+pip install agentwall[openai-agents]
 ```
+
+Installs:
+
+* AgentWall
+* OpenAI Agents SDK integration dependencies
+
+### LangChain Integration
+
+```bash
+pip install agentwall[langchain]
+```
+
+Installs:
+
+* AgentWall
+* LangChain
+* LangChain OpenAI
+
+### CrewAI Integration
+
+```bash
+pip install agentwall[crewai]
+```
+
+Installs:
+
+* AgentWall
+* CrewAI
+
+### All Supported Integrations (Recommended)
+
+```bash
+pip install agentwall[integrations]
+```
+
+Installs:
+
+* AgentWall
+* OpenAI Agents SDK
+* LangChain
+* LangChain OpenAI
+* CrewAI
+
+You do **NOT** need to install `agentwall` separately when using an integration package. Integration packages include the core AgentWall package automatically.
 
 ### Verify Installation
 
@@ -34,18 +85,19 @@ agentwall doctor
 
 `doctor` checks all required dependencies. Expected output:
 
-```
-  OK  API key storage (keyring)
-  OK  ORM (sqlalchemy)
-  OK  Inspector API (fastapi)
-  OK  Inspector server (uvicorn)
-  OK  Validation (pydantic)
-  OK  OpenAI/Groq/DeepSeek SDK (openai)
-  OK  Anthropic SDK (anthropic)
-  OK  Desktop Inspector (pywebview)
+```text
+OK  API key storage (keyring)
+OK  ORM (sqlalchemy)
+OK  Inspector API (fastapi)
+OK  Inspector server (uvicorn)
+OK  Validation (pydantic)
+OK  OpenAI/Groq/DeepSeek SDK (openai)
+OK  Anthropic SDK (anthropic)
+OK  Desktop Inspector (pywebview)
 
 AgentWall installation OK.
 ```
+
 
 ---
 
@@ -57,7 +109,10 @@ AgentWall installation OK.
 agentwall config
 ```
 
-Launches the configuration wizard. Options:
+Launches the configuration wizard.
+
+Options:
+
 1. Add / update provider
 2. Remove provider
 3. Set risk thresholds
@@ -78,11 +133,50 @@ When prompted, enter your API key. It is stored in the OS keyring — not in any
 agentwall config --low-threshold 25 --high-threshold 65
 ```
 
-Default: low=30, high=70.
+Default:
+
+- low = 30
+- high = 70
+
+Behavior:
 
 - Actions scoring below `low-threshold` → ALLOW
 - Actions scoring between thresholds → WARN
-- Actions scoring above `high-threshold` → LLM evaluation (if provider configured)
+- Actions scoring above `high-threshold` → LLM evaluation (if a provider is configured)
+
+## LLM Evaluation
+
+LLM evaluation is optional.
+
+Most actions are evaluated using:
+
+- Rules
+- Detectors
+- Policies
+- Risk scoring
+
+Only high-risk or ambiguous actions escalate to an LLM evaluator.
+
+Decision flow:
+
+```text
+Risk < LOW
+→ ALLOW
+
+LOW ≤ Risk < HIGH
+→ WARN
+
+Risk ≥ HIGH
+→ LLM Evaluation
+```
+
+Without a configured provider:
+
+```text
+High-risk events are blocked instead of evaluated.
+```
+
+Rule-based evaluation continues to function normally even when no LLM provider is configured.
 
 ### Check Status
 
@@ -140,7 +234,18 @@ agentwall config --provider ollama --model llama3.2 --priority 1
 agentwall inspect
 ```
 
-Opens a native desktop window. Requires PyWebView (included in default install).
+Launches the AgentWall Inspector desktop application.
+
+AgentWall automatically:
+
+1. Starts backend services
+2. Starts FastAPI
+3. Opens a native PyWebView window
+4. Loads the Inspector UI
+
+No browser navigation is required.
+
+Requires PyWebView (included in the default installation).
 
 ### Browser Mode
 
@@ -148,7 +253,14 @@ Opens a native desktop window. Requires PyWebView (included in default install).
 agentwall inspect --browser
 ```
 
-Starts the API server and opens the system browser. Use this on headless servers.
+Starts the API server and opens the system browser.
+
+Use this mode on:
+
+- Headless servers
+- Remote Linux machines
+- CI environments
+- Systems without desktop GUI support
 
 ### Custom Host/Port
 
@@ -156,9 +268,11 @@ Starts the API server and opens the system browser. Use this on headless servers
 agentwall inspect --host 0.0.0.0 --port 9090
 ```
 
-Default: `127.0.0.1:8080`.
+Default:
 
----
+```text
+127.0.0.1:8080
+```
 
 ## Framework Integration
 
