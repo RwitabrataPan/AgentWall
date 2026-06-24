@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "AI Agent Runtime Security Platform — runtime security and behavioral monitoring for agentic AI systems"
 readme = "README.md"
 license = { file = "LICENSE" }
-authors = [{ name = "AgentWall", email = "panrwitabrata34t@gmail.com" }]
+authors = [{ name = "Rwitabrata Pan" }]
 keywords = ["ai", "agents", "security", "runtime", "llm", "guardrails", "monitoring"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -36,10 +36,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/panrw/agentwall"
-Repository = "https://github.com/panrw/agentwall"
-Issues = "https://github.com/panrw/agentwall/issues"
-Changelog = "https://github.com/panrw/agentwall/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/RwitabrataPan/AgentWall"
+Repository = "https://github.com/RwitabrataPan/AgentWall"
+Issues = "https://github.com/RwitabrataPan/AgentWall/issues"
+Changelog = "https://github.com/RwitabrataPan/AgentWall/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
