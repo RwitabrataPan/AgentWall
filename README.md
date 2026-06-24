@@ -114,7 +114,7 @@ Supports:
 ## Installation
 
 ```bash
-pip install agentwall
+pip install agentwall-security
 ```
 
 ---

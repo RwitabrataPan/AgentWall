@@ -17,7 +17,7 @@ Choose **ONE** installation option.
 ### Core Package
 
 ```bash
-pip install agentwall
+pip install agentwall-security
 ```
 
 Recommended if:
@@ -29,7 +29,7 @@ Recommended if:
 ### OpenAI Agents SDK Integration
 
 ```bash
-pip install agentwall[openai-agents]
+pip install agentwall-security[openai-agents]
 ```
 
 Installs:
@@ -40,7 +40,7 @@ Installs:
 ### LangChain Integration
 
 ```bash
-pip install agentwall[langchain]
+pip install agentwall-security[langchain]
 ```
 
 Installs:
@@ -52,7 +52,7 @@ Installs:
 ### CrewAI Integration
 
 ```bash
-pip install agentwall[crewai]
+pip install agentwall-security[crewai]
 ```
 
 Installs:
@@ -63,7 +63,7 @@ Installs:
 ### All Supported Integrations (Recommended)
 
 ```bash
-pip install agentwall[integrations]
+pip install agentwall-security[integrations]
 ```
 
 Installs:
