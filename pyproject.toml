@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agentwall"
+name = "agentwall-security"
 version = "0.1.0"
 description = "AI Agent Runtime Security Platform — runtime security and behavioral monitoring for agentic AI systems"
 readme = "README.md"
