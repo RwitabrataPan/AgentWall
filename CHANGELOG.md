@@ -6,6 +6,45 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ---
 
+## [0.2.5] - 2026-06-26
+
+### Fixed
+
+- **Inspector Executions page shows executions from all projects**: `GET /api/executions`
+  previously called `list_all()` with no project filter, mixing executions from every
+  project in the shared database. It now calls `list_for_project(current_project_id)`
+  using the same project-detection logic as `GET /api/overview`. Each Inspector instance
+  now shows only the executions belonging to the project it was launched from.
+
+- **Overview page never refreshes for cross-process agents**: `OverviewPage` relied
+  exclusively on WebSocket `refresh` messages to trigger re-fetches. The WebSocket
+  notification path (`EventBus.publish()`) is in-process only — agents running in a
+  separate terminal cannot notify the Inspector's EventBus. `OverviewPage` now polls
+  `GET /api/overview` every 5 seconds as a fallback, matching the existing polling
+  behaviour of `ExecutionsPage`. Active Executions and Total Executions now update
+  within 5 seconds of any agent event regardless of whether the agent shares the
+  Inspector's process.
+
+- **WebSocket connection not recovered after drop**: `connectEventStream` had no
+  reconnect logic. If the WebSocket closed for any reason, `refreshTick` stopped
+  incrementing permanently, disabling real-time updates for same-process agents.
+  The function now reconnects automatically after a 3-second delay.
+
+### Tests
+
+- Replaced `test_list_executions_returns_all_projects` (verified wrong all-project
+  behaviour) with `test_list_executions_filters_by_current_project` and
+  `test_list_executions_excludes_other_projects`, which confirm project isolation at
+  the API layer.
+- Removed `test_executions_visible_regardless_of_inspector_cwd` and
+  `test_execution_appears_regardless_of_cwd` — both verified the old cross-project
+  visibility behaviour that is now intentionally absent.
+- Updated `test_list_executions_newest_first` to patch
+  `agentwall.core.execution_manager.detect_project_root` so the test project matches
+  what the route resolves.
+
+---
+
 ## [0.2.4] - 2026-06-26
 
 ### Fixed

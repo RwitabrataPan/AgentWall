@@ -11,6 +11,14 @@ export function OverviewPage({ refreshTick }: Props) {
     api.getOverview().then(setData).catch((e) => setErr(String(e)));
   }, [refreshTick]);
 
+  // Poll for cross-process updates (agents running in separate terminals)
+  useEffect(() => {
+    const id = setInterval(() => {
+      api.getOverview().then(setData).catch(() => {});
+    }, 5000);
+    return () => clearInterval(id);
+  }, []);
+
   if (err) return <div className="p-6 text-red-400 text-sm">{err}</div>;
   if (!data) return <div className="p-6 text-gray-500 text-sm">Loading…</div>;
 

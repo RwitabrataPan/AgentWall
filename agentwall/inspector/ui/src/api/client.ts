@@ -200,15 +200,27 @@ export const api = {
   },
 };
 
-// WebSocket helper — calls onRefresh whenever new events land
+// WebSocket helper — calls onRefresh whenever new events land; reconnects on drop
 export function connectEventStream(onRefresh: () => void): () => void {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws/events`);
-  ws.onmessage = (e) => {
-    try {
-      const msg = JSON.parse(e.data) as { type: string };
-      if (msg.type === "refresh") onRefresh();
-    } catch { /* ignore */ }
-  };
-  return () => ws.close();
+  let ws: WebSocket;
+  let stopped = false;
+
+  function connect() {
+    if (stopped) return;
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${proto}://${location.host}/ws/events`);
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data) as { type: string };
+        if (msg.type === "refresh") onRefresh();
+      } catch { /* ignore */ }
+    };
+    ws.onclose = () => {
+      if (!stopped) setTimeout(connect, 3000);
+    };
+    ws.onerror = () => ws.close();
+  }
+
+  connect();
+  return () => { stopped = true; ws.close(); };
 }

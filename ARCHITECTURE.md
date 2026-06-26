@@ -1,6 +1,6 @@
 # AgentWall Architecture
 
-This document describes the implemented architecture of AgentWall v0.2.4.
+This document describes the implemented architecture of AgentWall v0.2.5.
 
 ---
 
