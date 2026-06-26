@@ -287,6 +287,14 @@ export function ExecutionsPage({ refreshTick }: Props) {
     api.getExecutions().then(setExecutions).catch((e) => setErr(String(e)));
   }, [refreshTick]);
 
+  // Poll for cross-process updates (agents running in separate terminals)
+  useEffect(() => {
+    const id = setInterval(() => {
+      api.getExecutions().then(setExecutions).catch(() => {});
+    }, 5000);
+    return () => clearInterval(id);
+  }, []);
+
   const exportAll = () => { window.open(api.exportUrl("json"), "_blank"); };
   const exportCsv = () => { window.open(api.exportUrl("csv"), "_blank"); };
 

@@ -217,3 +217,125 @@ def test_protect_agent_proxies_unknown_attrs(db):
 
     agent = protect_agent(RichAgent(), goal="test", db=db, engine=engine)
     assert agent.name == "my-agent"
+
+
+# --- execution tracking regression (v0.2.4) ---
+
+def test_protect_agent_creates_execution(db):
+    """ProtectedAgent must create exactly one Execution row per instantiation."""
+    from agentwall.core.execution_manager import ExecutionManager
+
+    engine = SecurityEngine()
+    agent = protect_agent(_FakeAgent(), goal="train model", db=db, engine=engine)
+
+    assert agent.execution_id is not None
+    mgr = ExecutionManager(db)
+    executions = mgr.list_all()
+    assert len(executions) == 1
+    assert executions[0].id == agent.execution_id
+
+
+def test_protect_agent_links_session_to_execution(db):
+    """Session created by ProtectedAgent must have execution_id matching the execution."""
+    from agentwall.core.session_manager import SessionManager
+
+    engine = SecurityEngine()
+    agent = protect_agent(_FakeAgent(), goal="deploy pipeline", db=db, engine=engine)
+
+    session = SessionManager(db).get(agent.session_id)
+    assert session.execution_id == agent.execution_id
+
+
+def test_protect_agent_finishes_execution_on_end_session(db):
+    """end_session() must mark the execution as completed."""
+    from agentwall.core.execution_manager import ExecutionManager
+
+    engine = SecurityEngine()
+    agent = protect_agent(_FakeAgent(), goal="run analysis", db=db, engine=engine)
+    eid = agent.execution_id
+
+    agent.end_session()
+
+    executions = ExecutionManager(db).list_all()
+    finished = next(e for e in executions if e.id == eid)
+    assert finished.status == "completed"
+    assert finished.finished_at is not None
+
+
+# --- execution lifecycle regression (v0.2.5) ---
+
+def test_end_session_idempotent(db):
+    """Calling end_session() twice must not raise and must not change status."""
+    from agentwall.core.execution_manager import ExecutionManager
+
+    engine = SecurityEngine()
+    agent = protect_agent(_FakeAgent(), goal="idempotent test", db=db, engine=engine)
+    eid = agent.execution_id
+
+    agent.end_session()
+    agent.end_session()  # second call must be a no-op
+
+    row = ExecutionManager(db).get(eid)
+    assert row.status == "completed"
+
+
+def test_end_session_finish_called_even_if_session_end_raises(db):
+    """Regression (Gap 1): finish() must run even when session_mgr.end() raises."""
+    from unittest.mock import patch
+    from agentwall.core.execution_manager import ExecutionManager
+
+    engine = SecurityEngine()
+    agent = protect_agent(_FakeAgent(), goal="resilience test", db=db, engine=engine)
+    eid = agent.execution_id
+
+    with patch.object(agent._session_mgr, "end", side_effect=RuntimeError("db error")):
+        agent.end_session()  # must not raise, and finish() must still run
+
+    row = ExecutionManager(db).get(eid)
+    assert row.status == "completed"
+    assert row.finished_at is not None
+
+
+def test_context_manager_marks_failed_on_exception(db):
+    """Regression (Gap 3): __exit__ with exception must finalize as 'failed'."""
+    from agentwall.core.execution_manager import ExecutionManager
+
+    engine = SecurityEngine()
+    eid = None
+    try:
+        with protect_agent(_FakeAgent(), goal="will fail", db=db, engine=engine) as agent:
+            eid = agent.execution_id
+            raise ValueError("agent error")
+    except ValueError:
+        pass
+
+    row = ExecutionManager(db).get(eid)
+    assert row.status == "failed"
+    assert row.finished_at is not None
+
+
+def test_context_manager_marks_completed_on_success(db):
+    """__exit__ without exception must finalize as 'completed'."""
+    from agentwall.core.execution_manager import ExecutionManager
+
+    engine = SecurityEngine()
+    with protect_agent(_FakeAgent(), goal="will succeed", db=db, engine=engine) as agent:
+        eid = agent.execution_id
+
+    row = ExecutionManager(db).get(eid)
+    assert row.status == "completed"
+
+
+def test_init_failure_after_execution_created_marks_failed(db):
+    """Regression (Gap 2): execution must be 'failed' if __init__ raises after exec_mgr.create()."""
+    from unittest.mock import patch
+    from agentwall.core.execution_manager import ExecutionManager
+
+    engine = SecurityEngine()
+    with patch("agentwall.core.session_manager.SessionManager.create", side_effect=RuntimeError("db locked")):
+        with pytest.raises(RuntimeError):
+            protect_agent(_FakeAgent(), goal="orphan test", db=db, engine=engine)
+
+    executions = ExecutionManager(db).list_all()
+    assert len(executions) == 1
+    assert executions[0].status == "failed"

@@ -77,6 +77,12 @@ class ExecutionManager:
                 row.finished_at = time.time()
                 row.status = status
                 db.commit()
+        # Notify Inspector — no-op when agent runs cross-process
+        try:
+            from agentwall.inspector.event_bus import get_bus
+            get_bus().publish()
+        except Exception:
+            pass
 
     def get(self, execution_id: str) -> Execution | None:
         with self._db.session() as db:

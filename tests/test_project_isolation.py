@@ -309,3 +309,104 @@ def test_project_isolation_separate_projects(db, tmp_path, monkeypatch):
     assert len(execs_a) == 1
     assert len(execs_b) == 1
     assert execs_a[0].id != execs_b[0].id
+
+
+# ── Runtime validation regression (v0.2.4) ───────────────────────────────────
+
+def test_default_db_path():
+    """Database() with no args must resolve to ~/.agentwall/data.db."""
+    from agentwall.storage.database import _DEFAULT_PATH
+    assert _DEFAULT_PATH == Path.home() / ".agentwall" / "data.db"
+
+
+def test_single_database_used(tmp_path):
+    """Two Database() instances with same path share the same file."""
+    db_path = tmp_path / "shared.db"
+    db1 = Database(db_path)
+    db2 = Database(db_path)
+    mgr1 = ExecutionManager(db1)
+    mgr2 = ExecutionManager(db2)
+    root = tmp_path / "proj"
+    root.mkdir()
+    proj = mgr1.get_or_create_project(root)
+    mgr1.create(proj.id, "task from db1")
+    execs = mgr2.list_all()
+    assert len(execs) == 1
+    assert execs[0].goal == "task from db1"
+    db1.close()
+    db2.close()
+
+
+def test_seven_consecutive_runs_all_completed(db, tmp_path, monkeypatch):
+    """Regression: 7 consecutive runs must produce 7 completed executions and 0 running."""
+    from agentwall.interceptors.agent import ProtectedAgent
+    from agentwall.security.engine import SecurityEngine
+
+    class _Stub:
+        def run(self, *a, **kw): return "done"
+
+    engine = SecurityEngine()
+    monkeypatch.chdir(tmp_path)
+    mgr = ExecutionManager(db)
+
+    for i in range(7):
+        with ProtectedAgent(_Stub(), goal=f"task {i+1}", db=db, engine=engine):
+            pass  # context manager finalizes execution
+
+    executions = mgr.list_all()
+    assert len(executions) == 7
+    assert all(e.status == "completed" for e in executions), [e.status for e in executions]
+    assert all(e.finished_at is not None for e in executions)
+
+
+def test_no_running_executions_after_clean_run(db, tmp_path, monkeypatch):
+    """Active execution count must return to zero after agent exits normally."""
+    from agentwall.interceptors.agent import ProtectedAgent
+    from agentwall.security.engine import SecurityEngine
+
+    class _Stub:
+        def run(self, *a, **kw): return "done"
+
+    engine = SecurityEngine()
+    monkeypatch.chdir(tmp_path)
+    mgr = ExecutionManager(db)
+
+    with ProtectedAgent(_Stub(), goal="clean run", db=db, engine=engine):
+        pass
+
+    running = [e for e in mgr.list_all() if e.status == "running"]
+    assert running == [], f"Orphaned running executions: {[e.id for e in running]}"
+
+
+def test_finish_publishes_to_event_bus(db, tmp_path):
+    """ExecutionManager.finish() must publish to EventBus for same-process Inspector updates."""
+    from unittest.mock import MagicMock, patch
+    root = tmp_path / "proj"
+    root.mkdir()
+    mgr = ExecutionManager(db)
+    proj = mgr.get_or_create_project(root)
+    ex = mgr.create(proj.id, "notify test")
+
+    mock_bus = MagicMock()
+    with patch("agentwall.inspector.event_bus.get_bus", return_value=mock_bus):
+        mgr.finish(ex.id)
+
+    mock_bus.publish.assert_called_once()
+
+
+def test_execution_ordering_newest_first(db, tmp_path):
+    """list_all() must return executions newest-first."""
+    import time as _time
+    root = tmp_path / "proj"
+    root.mkdir()
+    mgr = ExecutionManager(db)
+    proj = mgr.get_or_create_project(root)
+    e1 = mgr.create(proj.id, "first")
+    _time.sleep(0.01)
+    e2 = mgr.create(proj.id, "second")
+    _time.sleep(0.01)
+    e3 = mgr.create(proj.id, "third")
+    rows = mgr.list_all()
+    assert rows[0].id == e3.id
+    assert rows[1].id == e2.id
+    assert rows[2].id == e1.id

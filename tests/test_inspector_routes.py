@@ -510,3 +510,45 @@ def test_execution_sessions_endpoint():
         app.dependency_overrides.clear()
         db.close()
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# ── Execution lifecycle regression (v0.2.4) ────────────────────────────────────
+
+def test_execution_finalized_shows_completed_status():
+    """Regression: finished execution must appear as 'completed' via the API."""
+    db, tmpdir = _make_test_db()
+    try:
+        mgr = ExecutionManager(db)
+        root = Path(tmpdir) / "proj"
+        root.mkdir()
+        proj = mgr.get_or_create_project(root)
+        ex = mgr.create(proj.id, "run pipeline")
+        mgr.finish(ex.id)
+        r = _client(db).get(f"/api/executions/{ex.id}")
+        assert r.status_code == 200
+        assert r.json()["status"] == "completed"
+        assert r.json()["finished_at"] is not None
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_execution_appears_regardless_of_cwd():
+    """Regression: execution created from any directory must appear in /api/executions."""
+    db, tmpdir = _make_test_db()
+    try:
+        mgr = ExecutionManager(db)
+        remote_dir = Path(tmpdir) / "remote-agent-dir"
+        remote_dir.mkdir()
+        proj = mgr.get_or_create_project(remote_dir)
+        mgr.create(proj.id, "remote task")
+        r = _client(db).get("/api/executions")
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data) == 1
+        assert data[0]["goal"] == "remote task"
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)

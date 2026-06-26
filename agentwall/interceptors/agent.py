@@ -60,18 +60,35 @@ class ProtectedAgent:
             self._execution_id = execution.id
             self._owns_execution = True
 
-        self._session_mgr = SessionManager(self._db)
-        self._session: Session = self._session_mgr.create(
-            self._goal_ref[0],
-            project_id=self._project_id,
-            execution_id=self._execution_id,
-        )
-        self._interceptor = ToolInterceptor(self._db, self._engine)
-        from agentwall.security.goal_tracker import GoalTracker
-        self._goal_tracker = GoalTracker(self._session.id, self._db, self._goal_ref)
-        if goal:
-            self._goal_tracker.set_goal(goal, reason="initial")
-        self._closed = False
+        # Any failure after exec_mgr.create() would orphan the committed Execution
+        # row in "running" state. Catch and mark it "failed" before re-raising.
+        try:
+            self._session_mgr = SessionManager(self._db)
+            self._session: Session = self._session_mgr.create(
+                self._goal_ref[0],
+                project_id=self._project_id,
+                execution_id=self._execution_id,
+            )
+            self._interceptor = ToolInterceptor(self._db, self._engine)
+            from agentwall.security.goal_tracker import GoalTracker
+            self._goal_tracker = GoalTracker(self._session.id, self._db, self._goal_ref)
+            if goal:
+                self._goal_tracker.set_goal(goal, reason="initial")
+            self._closed = False
+        except Exception:
+            if self._owns_execution:
+                try:
+                    self._exec_mgr.finish(self._execution_id, status="failed")
+                except Exception:
+                    pass
+            raise
+
+        # Notify Inspector of new execution — no-op when agent runs cross-process
+        try:
+            from agentwall.inspector.event_bus import get_bus
+            get_bus().publish()
+        except Exception:
+            pass
 
     def _resolve_model(self) -> str | None:
         try:
@@ -128,21 +145,28 @@ class ProtectedAgent:
     def run(self, *args, **kwargs) -> Any:
         return self._agent.run(*args, **kwargs)
 
-    def end_session(self) -> None:
-        if not self._closed:
+    def end_session(self, *, status: str = "completed") -> None:
+        if self._closed:
+            return
+        self._closed = True  # set first — prevents re-entry even if DB ops fail
+        try:
             self._session_mgr.end(self._session.id)
-            if self._owns_execution:
-                self._exec_mgr.finish(self._execution_id)
-            self._closed = True
+        except Exception:
+            pass
+        if self._owns_execution:
+            try:
+                self._exec_mgr.finish(self._execution_id, status=status)
+            except Exception:
+                pass
 
-    def close(self) -> None:
-        self.end_session()
+    def close(self, *, status: str = "completed") -> None:
+        self.end_session(status=status)
 
     def __enter__(self) -> "ProtectedAgent":
         return self
 
-    def __exit__(self, *_: Any) -> None:
-        self.close()
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close(status="failed" if exc_type is not None else "completed")
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._agent, name)

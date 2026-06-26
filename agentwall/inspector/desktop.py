@@ -64,10 +64,16 @@ def launch_desktop(host: str = "127.0.0.1", port: int = 8080) -> None:
     webview.create_window("AgentWall Inspector", url, width=1280, height=800, resizable=True)
     webview.start()
 
-    # Window closed — signal uvicorn to stop, then force-exit.
-    # t is daemon=True so it won't block normal exit, but PyWebView (EdgeWebView2
-    # on Windows) leaves non-daemon runtime threads alive after webview.start()
-    # returns, which prevents the interpreter from exiting on its own.
+    # Graceful shutdown sequence:
+    #   1. Signal uvicorn to drain and stop accepting new requests.
+    #   2. Wait up to 5 s for the server thread to finish.
+    #   3. Force-exit the interpreter.
+    #
+    # Step 3 is required on Windows: the EdgeWebView2 (Chromium) runtime spawns
+    # non-daemon COM threads that survive after webview.start() returns and cannot
+    # be joined or cleaned up from Python. Without os._exit(0) the interpreter
+    # hangs indefinitely. SQLite WAL mode guarantees no corruption on abrupt exit
+    # because committed transactions are already durable in the WAL file.
     if _server_ref:
         _server_ref[0].should_exit = True
     t.join(timeout=5)

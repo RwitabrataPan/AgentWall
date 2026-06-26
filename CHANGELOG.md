@@ -6,6 +6,58 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ---
 
+## [0.2.4] - 2026-06-26
+
+### Fixed
+
+- **Executions page not updating after agent run**: `ProtectedAgent.__init__` now
+  publishes a refresh event via `EventBus` immediately after creating the execution
+  and session. When the agent and Inspector share the same process, the Executions
+  page updates in real time. `ExecutionManager.finish()` also publishes a refresh
+  event so the Inspector reflects the completed status immediately.
+
+- **Executions page stale for cross-process agents**: `ExecutionsPage` now polls
+  `/api/executions` every 5 seconds in addition to responding to WebSocket refresh
+  events. Executions created by agents running in separate terminals appear within
+  5 seconds without any manual refresh.
+
+- **Execution permanently stuck in "running" state after agent exits**: Three gaps
+  in `ProtectedAgent` lifecycle were closed:
+  - `end_session()` was not exception-safe — if `session_mgr.end()` raised a
+    SQLAlchemy error, `finish()` was skipped and `self._closed` stayed `False`.
+    Fix: set `self._closed = True` first (re-entry guard), then wrap each DB
+    operation in its own `try/except` so `finish()` always runs.
+  - Orphaned execution on `__init__` failure — `exec_mgr.create()` commits the
+    `Execution` row before session creation and `GoalTracker.__init__`. If either
+    raised, the committed row stayed `status="running"` with no owner to finalize
+    it. Fix: wrap everything after `exec_mgr.create()` in `try/except`; call
+    `finish(status="failed")` before re-raising.
+  - `__exit__` always marked `"completed"` regardless of exception — the old
+    signature `__exit__(self, *_)` discarded `exc_type`. Fix: correct three-argument
+    signature, passes `status="failed"` when `exc_type is not None`.
+
+### Added
+
+- **Minimal demo script** (`examples/demo.py`): no API key required. Demonstrates
+  the full execution lifecycle with protected tool calls. Run multiple times to
+  build up history visible in the Inspector.
+
+### Tests
+
+- 5 regression tests in `test_interceptors.py`: `end_session()` idempotency,
+  `finish()` called when `session_mgr.end()` raises, context manager marks
+  `"failed"` on exception, context manager marks `"completed"` on success, and
+  orphaned execution finalized `"failed"` when `__init__` raises after
+  `exec_mgr.create()`.
+- 2 regression tests in `test_inspector_routes.py`: finished execution reflected
+  as `"completed"` via API, and execution visible regardless of working directory.
+- 6 regression tests in `test_project_isolation.py`: default DB path, shared
+  database between two `Database()` instances, 7-consecutive-run all-completed
+  invariant, zero running executions after clean run, `EventBus.publish()` called
+  by `finish()`, and newest-first ordering from `list_all()`.
+
+---
+
 ## [0.2.3] - 2026-06-26
 
 ### Fixed
