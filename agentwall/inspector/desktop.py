@@ -21,8 +21,8 @@ def _wait_for_server(host: str, port: int, timeout: float = 15.0, interval: floa
     return False
 
 
-def _run_server_thread(host: str, port: int) -> None:
-    """Run uvicorn in a daemon thread."""
+def _run_server_thread(host: str, port: int, server_ref: list) -> None:
+    """Run uvicorn in a thread, storing Server reference for graceful stop."""
     import asyncio
     from uvicorn import Config, Server
 
@@ -32,20 +32,26 @@ def _run_server_thread(host: str, port: int) -> None:
         port=port,
         log_level="warning",
     )
-    server = Server(config)
-
-    asyncio.run(server.serve())
+    srv = Server(config)
+    server_ref.append(srv)
+    asyncio.run(srv.serve())
 
 
 def launch_desktop(host: str = "127.0.0.1", port: int = 8080) -> None:
     """Launch the AgentWall Inspector as a native desktop window.
 
     Starts the FastAPI backend in a daemon thread, waits for it to be ready,
-    then opens a PyWebView window. Blocks until the window is closed.
+    then opens a PyWebView window. When the window is closed, signals uvicorn
+    to stop gracefully so the terminal returns immediately with no zombie process.
     """
     import webview
 
-    t = threading.Thread(target=_run_server_thread, args=(host, port), daemon=True)
+    _server_ref: list = []
+    t = threading.Thread(
+        target=_run_server_thread,
+        args=(host, port, _server_ref),
+        daemon=True,
+    )
     t.start()
 
     if not _wait_for_server(host, port):
@@ -56,3 +62,8 @@ def launch_desktop(host: str = "127.0.0.1", port: int = 8080) -> None:
     url = f"http://{host}:{port}"
     webview.create_window("AgentWall Inspector", url, width=1280, height=800, resizable=True)
     webview.start()
+
+    # Window closed — stop uvicorn so the process exits cleanly.
+    if _server_ref:
+        _server_ref[0].should_exit = True
+    t.join(timeout=5)

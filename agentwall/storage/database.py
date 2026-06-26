@@ -27,6 +27,32 @@ class Database:
 
     def _migrate(self) -> None:
         with self.engine.connect() as conn:
+            # v0.2.1: project isolation tables
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    root TEXT NOT NULL UNIQUE,
+                    created_at REAL
+                )
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS executions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    goal TEXT NOT NULL,
+                    prompt TEXT,
+                    framework TEXT,
+                    model TEXT,
+                    started_at REAL,
+                    finished_at REAL,
+                    status TEXT DEFAULT 'running',
+                    meta TEXT
+                )
+            """))
+            conn.commit()
+
+            # v0.2.0: provider_settings columns
             for col, typedef in [
                 ("priority", "INTEGER NOT NULL DEFAULT 0"),
                 ("enabled", "INTEGER NOT NULL DEFAULT 1"),
@@ -37,6 +63,7 @@ class Database:
                 except Exception:
                     pass
 
+            # v0.2.0: tool_events columns
             for col, typedef in [
                 ("tool_type", "TEXT"),
                 ("action", "TEXT"),
@@ -49,6 +76,7 @@ class Database:
                 except Exception:
                     pass
 
+            # v0.2.0: evaluations columns
             for col, typedef in [
                 ("alignment_score", "REAL"),
                 ("detector_hits", "TEXT"),
@@ -64,6 +92,7 @@ class Database:
                 except Exception:
                     pass
 
+            # v0.2.0: policies columns
             for col, typedef in [
                 ("enabled", "INTEGER NOT NULL DEFAULT 1"),
                 ("priority", "INTEGER NOT NULL DEFAULT 0"),
@@ -74,11 +103,23 @@ class Database:
                 except Exception:
                     pass
 
+            # v0.2.0: goal_segments confidence
             try:
                 conn.execute(text("ALTER TABLE goal_segments ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0"))
                 conn.commit()
             except Exception:
                 pass
+
+            # v0.2.1: project + execution FK columns on sessions
+            for col, typedef in [
+                ("project_id", "TEXT"),
+                ("execution_id", "TEXT"),
+            ]:
+                try:
+                    conn.execute(text(f"ALTER TABLE sessions ADD COLUMN {col} {typedef}"))
+                    conn.commit()
+                except Exception:
+                    pass
 
     def session(self) -> Session:
         return self._factory()

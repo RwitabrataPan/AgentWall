@@ -11,7 +11,14 @@ class SessionManager:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    def create(self, user_goal: str, meta: dict | None = None) -> Session:
+    def create(
+        self,
+        user_goal: str,
+        meta: dict | None = None,
+        *,
+        project_id: str | None = None,
+        execution_id: str | None = None,
+    ) -> Session:
         session_id = str(uuid.uuid4())
         with self._db.session() as db:
             row = Session(
@@ -19,6 +26,8 @@ class SessionManager:
                 user_goal=user_goal,
                 created_at=time.time(),
                 meta=meta or {},
+                project_id=project_id,
+                execution_id=execution_id,
             )
             db.add(row)
             db.commit()

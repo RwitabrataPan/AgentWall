@@ -6,6 +6,49 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ---
 
+## [0.2.1] - 2026-06-26
+
+### Added
+
+**Project Isolation**
+- Automatic project detection from git root (falls back to CWD)
+- Every session and execution is scoped to its project — projects never share history
+- New `projects` and `executions` tables with automatic migration for existing databases
+- `GET /api/project` endpoint returns current project (name, root, ID)
+
+**Execution-Centric Inspector**
+- New `Executions` page replaces Sessions as the primary view
+- Each `invoke()`/`run()`/`kickoff()` call creates one Execution card
+- Latest execution auto-expands; older executions collapse
+- Execution cards show: goal, framework, model, duration, status, decision, threats
+- Full execution details panel with collapsible Tool Calls and Security Evaluation sections
+- `GET /api/executions` and `GET /api/executions/{id}` endpoints
+
+**Policy Builder**
+- Visual form builder with fields: Name, Description, Tool Type, Pattern, Decision, Reason
+- Six built-in policy templates: Block SSH Keys, Protect .env Files, Protect AWS Credentials, Prevent Database Dumps, Prevent External Uploads, Warn Before Email
+- JSON mode toggle for advanced editing
+- Policy test sandbox: simulate evaluation against any tool/target before saving
+- `GET /api/policies/templates` and `POST /api/policies/test` endpoints
+
+**Inspector Improvements**
+- Project name displayed in NavBar and Overview
+- Overview shows: current project, active/total executions, avg risk, top detectors, top policies
+- Execution details panel shows complete evaluation breakdown without requiring a tool call selection
+- Graceful Inspector shutdown: closing the PyWebView window now stops uvicorn and returns the terminal immediately — no Ctrl+C required
+
+### Changed
+
+- `ProtectedAgent.__init__` accepts optional `framework` and `execution_id` parameters (backward compatible)
+- `SessionManager.create` accepts optional `project_id` and `execution_id` (backward compatible)
+- Overview API response extended with `project_id`, `project_name`, execution counts, `avg_risk`, `top_detectors`, `top_policies`
+
+### Fixed
+
+- Inspector window close leaving orphaned uvicorn process / blocked terminal
+
+---
+
 ## [0.2.0] - 2026-06-26
 
 ### Added

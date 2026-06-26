@@ -1,8 +1,8 @@
-export type Page = "overview" | "sessions" | "timeline" | "providers" | "policies";
+export type Page = "overview" | "executions" | "sessions" | "timeline" | "providers" | "policies";
 
 const PAGES: { id: Page; label: string }[] = [
   { id: "overview", label: "Overview" },
-  { id: "sessions", label: "Sessions" },
+  { id: "executions", label: "Executions" },
   { id: "providers", label: "Providers" },
   { id: "policies", label: "Policies" },
 ];
@@ -11,9 +11,10 @@ interface Props {
   page: Page;
   onNav: (p: Page) => void;
   version: string;
+  projectName?: string;
 }
 
-export function NavBar({ page, onNav, version }: Props) {
+export function NavBar({ page, onNav, version, projectName }: Props) {
   return (
     <nav className="bg-gray-900 border-b border-gray-800 px-4 flex items-center gap-1 h-12 shrink-0">
       <span className="font-bold text-white mr-4 tracking-tight select-none">
@@ -24,7 +25,7 @@ export function NavBar({ page, onNav, version }: Props) {
           key={p.id}
           onClick={() => onNav(p.id)}
           className={`px-3 py-1.5 rounded text-sm transition-colors ${
-            page === p.id || (page === "timeline" && p.id === "sessions")
+            page === p.id || (page === "timeline" && p.id === "executions")
               ? "bg-gray-700 text-white"
               : "text-gray-400 hover:text-white hover:bg-gray-800"
           }`}
@@ -32,6 +33,12 @@ export function NavBar({ page, onNav, version }: Props) {
           {p.label}
         </button>
       ))}
+      {projectName && (
+        <span className="ml-4 text-xs text-gray-600 select-none hidden md:block">
+          <span className="text-gray-700">project: </span>
+          <span className="text-gray-400">{projectName}</span>
+        </span>
+      )}
       <span className="ml-auto text-xs text-gray-600 select-none">v{version}</span>
     </nav>
   );

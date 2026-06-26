@@ -12,6 +12,35 @@ class Base(DeclarativeBase):
     pass
 
 
+class Project(Base):
+    __tablename__ = "projects"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    root: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+    executions: Mapped[list[Execution]] = relationship("Execution", back_populates="project")
+
+
+class Execution(Base):
+    __tablename__ = "executions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id: Mapped[str] = mapped_column(String, ForeignKey("projects.id"), nullable=False)
+    goal: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    framework: Mapped[str | None] = mapped_column(String, nullable=True)
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    started_at: Mapped[float] = mapped_column(Float, default=time.time)
+    finished_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="running")
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    project: Mapped[Project] = relationship("Project", back_populates="executions")
+    sessions: Mapped[list[Session]] = relationship("Session", back_populates="execution")
+
+
 class Session(Base):
     __tablename__ = "sessions"
 
@@ -20,9 +49,12 @@ class Session(Base):
     created_at: Mapped[float] = mapped_column(Float, default=time.time)
     ended_at: Mapped[float | None] = mapped_column(Float, nullable=True)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    project_id: Mapped[str | None] = mapped_column(String, ForeignKey("projects.id"), nullable=True)
+    execution_id: Mapped[str | None] = mapped_column(String, ForeignKey("executions.id"), nullable=True)
 
     events: Mapped[list[ToolEvent]] = relationship("ToolEvent", back_populates="session")
     goal_segments: Mapped[list[GoalSegment]] = relationship("GoalSegment", back_populates="session")
+    execution: Mapped[Execution | None] = relationship("Execution", back_populates="sessions")
 
 
 class ToolEvent(Base):

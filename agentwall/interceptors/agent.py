@@ -27,6 +27,8 @@ class ProtectedAgent:
         goal: str | None = None,
         db: Database | None = None,
         engine: SecurityEngine | None = None,
+        framework: str | None = None,
+        execution_id: str | None = None,
     ) -> None:
         self._agent = agent
         self._goal_ref: list[str] = [goal or ""]
@@ -36,8 +38,34 @@ class ProtectedAgent:
             self._engine = build_default_engine(self._db)
         else:
             self._engine = engine
+
+        # Project + execution tracking
+        from agentwall.core.execution_manager import ExecutionManager
+        self._exec_mgr = ExecutionManager(self._db)
+        project = self._exec_mgr.current_project()
+        self._project_id = project.id
+
+        if execution_id is not None:
+            # Shared execution (e.g. CrewAI multi-agent)
+            self._execution_id: str = execution_id
+            self._owns_execution = False
+        else:
+            _model = self._resolve_model()
+            execution = self._exec_mgr.create(
+                project.id,
+                goal or "",
+                framework=framework,
+                model=_model,
+            )
+            self._execution_id = execution.id
+            self._owns_execution = True
+
         self._session_mgr = SessionManager(self._db)
-        self._session: Session = self._session_mgr.create(self._goal_ref[0])
+        self._session: Session = self._session_mgr.create(
+            self._goal_ref[0],
+            project_id=self._project_id,
+            execution_id=self._execution_id,
+        )
         self._interceptor = ToolInterceptor(self._db, self._engine)
         from agentwall.security.goal_tracker import GoalTracker
         self._goal_tracker = GoalTracker(self._session.id, self._db, self._goal_ref)
@@ -45,9 +73,23 @@ class ProtectedAgent:
             self._goal_tracker.set_goal(goal, reason="initial")
         self._closed = False
 
+    def _resolve_model(self) -> str | None:
+        try:
+            from agentwall.core.config_manager import ConfigManager
+            providers = ConfigManager(self._db).list_providers_ordered()
+            if providers:
+                return providers[0].model
+        except Exception:
+            pass
+        return None
+
     @property
     def session_id(self) -> str:
         return self._session.id
+
+    @property
+    def execution_id(self) -> str:
+        return self._execution_id
 
     @property
     def goal(self) -> str:
@@ -89,6 +131,8 @@ class ProtectedAgent:
     def end_session(self) -> None:
         if not self._closed:
             self._session_mgr.end(self._session.id)
+            if self._owns_execution:
+                self._exec_mgr.finish(self._execution_id)
             self._closed = True
 
     def close(self) -> None:

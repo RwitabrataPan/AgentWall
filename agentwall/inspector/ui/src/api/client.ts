@@ -2,12 +2,38 @@ const BASE = "/api";
 
 export type DecisionType = "allow" | "warn" | "block";
 
+export interface Project {
+  id: string;
+  name: string;
+  root: string;
+  created_at: number;
+}
+
+export interface Execution {
+  id: string;
+  project_id: string;
+  goal: string;
+  prompt: string | null;
+  framework: string | null;
+  model: string | null;
+  started_at: number;
+  finished_at: number | null;
+  status: string;
+  meta: Record<string, unknown>;
+  event_count: number;
+  threat_count: number;
+  max_risk: number | null;
+  overall_decision: DecisionType | null;
+}
+
 export interface Session {
   id: string;
   user_goal: string;
   created_at: number;
   ended_at: number | null;
   meta: Record<string, unknown>;
+  project_id: string | null;
+  execution_id: string | null;
   event_count: number;
   max_risk: number | null;
   threat_count: number;
@@ -40,11 +66,20 @@ export interface ToolEvent {
 }
 
 export interface Overview {
+  project_id: string | null;
+  project_name: string | null;
   active_sessions: number;
   total_sessions: number;
+  active_executions: number;
+  total_executions: number;
   total_events: number;
   threat_count: number;
   risk_distribution: { allow: number; warn: number; block: number };
+  avg_risk: number | null;
+  current_provider: string | null;
+  current_model: string | null;
+  top_detectors: { name: string; count: number }[];
+  top_policies: { name: string; count: number }[];
 }
 
 export interface Policy {
@@ -53,6 +88,21 @@ export interface Policy {
   config: Record<string, unknown>;
   created_at: number;
   enabled: boolean;
+  priority: number;
+}
+
+export interface PolicyTemplate {
+  name: string;
+  description: string;
+  config: Record<string, unknown>;
+}
+
+export interface PolicyTestResult {
+  matched: boolean;
+  rule_index: number | null;
+  decision: string | null;
+  reason: string | null;
+  rule: Record<string, unknown> | null;
 }
 
 export interface Provider {
@@ -95,10 +145,18 @@ export const api = {
   // Health
   health: () => request<{ status: string; version: string }>("/health"),
 
+  // Project
+  getProject: () => request<Project>("/project"),
+
   // Overview
   getOverview: () => request<Overview>("/overview"),
 
-  // Sessions
+  // Executions
+  getExecutions: () => request<Execution[]>("/executions"),
+  getExecution: (id: string) => request<Execution>(`/executions/${id}`),
+  getExecutionEvents: (id: string) => request<ToolEvent[]>(`/executions/${id}/events`),
+
+  // Sessions (backward compat)
   getSessions: () => request<Session[]>("/sessions"),
   getSession: (id: string) => request<Session>(`/sessions/${id}`),
   endSession: (id: string) => request<{ ok: boolean }>(`/sessions/${id}/end`, { method: "POST" }),
@@ -109,8 +167,11 @@ export const api = {
 
   // Policies
   getPolicies: () => request<Policy[]>("/policies"),
-  createPolicy: (name: string, config: unknown) =>
-    request<Policy>("/policies", { method: "POST", ...json({ name, config }) }),
+  getPolicyTemplates: () => request<PolicyTemplate[]>("/policies/templates"),
+  testPolicy: (config: unknown, tool_type: string, target: string, action?: string) =>
+    request<PolicyTestResult>("/policies/test", { method: "POST", ...json({ config, tool_type, target, action }) }),
+  createPolicy: (name: string, config: unknown, priority = 0) =>
+    request<Policy>("/policies", { method: "POST", ...json({ name, config, priority }) }),
   updatePolicy: (name: string, config: unknown) =>
     request<Policy>(`/policies/${encodeURIComponent(name)}`, { method: "PUT", ...json({ config }) }),
   enablePolicy: (name: string) =>

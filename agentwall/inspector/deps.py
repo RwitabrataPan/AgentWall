@@ -4,6 +4,7 @@ from functools import lru_cache
 
 from agentwall.core.config_manager import ConfigManager
 from agentwall.core.event_manager import EventManager
+from agentwall.core.execution_manager import ExecutionManager
 from agentwall.core.session_manager import SessionManager
 from agentwall.security.policy_engine import PolicyEngine
 from agentwall.storage.database import Database
@@ -28,3 +29,7 @@ def get_config_manager() -> ConfigManager:
 
 def get_policy_engine() -> PolicyEngine:
     return PolicyEngine(get_db())
+
+
+def get_execution_manager() -> ExecutionManager:
+    return ExecutionManager(get_db())
