@@ -143,3 +143,67 @@ class DataExfiltrationDetector(BaseDetector):
                     hits.append("terminal_exfil_to_known_domain")
 
         return hits
+
+
+_CODE_GOAL_KEYWORDS = frozenset([
+    "fix", "bug", "implement", "feature", "code", "test", "write", "build",
+    "create", "update", "refactor", "debug", "review", "read", "analyze",
+    "check", "inspect", "find", "locate",
+])
+_EXFIL_GOAL_KEYWORDS = frozenset(["send", "email", "notify", "report", "upload", "export"])
+_CRED_TARGETS = frozenset([
+    ".env", "credential", "secret", "password", "token", ".pem", ".key",
+    "id_rsa", ".aws/", "service_account",
+])
+
+
+class GoalDriftDetector(BaseDetector):
+    """Detects tool actions inconsistent with the current stated goal.
+
+    Unlike ScopeExpansionDetector (history-based), this compares each action
+    directly against the goal text to catch prompt-injection-induced goal hijacking.
+    """
+
+    name: str = "goal_drift"
+
+    def detect(self, event: RuntimeEvent, history: list[RuntimeEvent]) -> list[str]:
+        hits: list[str] = []
+        goal = event.goal.lower()
+
+        if not goal:
+            return hits
+
+        # Credentials access while goal is code-focused
+        if (
+            event.resource_category == ResourceCategory.CREDENTIALS
+            and any(kw in goal for kw in _CODE_GOAL_KEYWORDS)
+            and not any(kw in goal for kw in ("secret", "credential", "key", "token", "auth"))
+        ):
+            hits.append("goal_drift:credential_access_off_goal")
+
+        # Credential target patterns while goal is code-focused
+        tgt = event.target.lower().replace("\\", "/")
+        if (
+            any(p in tgt for p in _CRED_TARGETS)
+            and any(kw in goal for kw in _CODE_GOAL_KEYWORDS)
+            and event.resource_category not in (ResourceCategory.CREDENTIALS,)
+        ):
+            hits.append("goal_drift:sensitive_target_off_goal")
+
+        # Email send when goal doesn't mention communication
+        if (
+            event.tool_type == ToolType.EMAIL
+            and event.action == ToolAction.SEND
+            and not any(kw in goal for kw in _EXFIL_GOAL_KEYWORDS)
+        ):
+            hits.append("goal_drift:unexpected_email")
+
+        # System resource access when goal is code-focused
+        if (
+            event.resource_category == ResourceCategory.SYSTEM
+            and any(kw in goal for kw in _CODE_GOAL_KEYWORDS)
+            and not any(kw in goal for kw in ("system", "config", "setup", "install", "deploy"))
+        ):
+            hits.append("goal_drift:system_access_off_goal")
+
+        return hits

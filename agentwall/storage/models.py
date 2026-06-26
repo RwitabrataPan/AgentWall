@@ -72,6 +72,7 @@ class GoalSegment(Base):
     started_at: Mapped[float] = mapped_column(Float, default=time.time)
     ended_at: Mapped[float | None] = mapped_column(Float, nullable=True)
     transition_reason: Mapped[str] = mapped_column(String, default="initial")
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
 
     session: Mapped[Session] = relationship("Session", back_populates="goal_segments")
 

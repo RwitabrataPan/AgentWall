@@ -63,7 +63,7 @@ def doctor() -> None:
     if all_ok:
         typer.echo("\nAgentWall installation OK.")
     else:
-        typer.echo("\nSome dependencies missing. Run: pip install agentwall")
+        typer.echo("\nSome dependencies missing. Run: pip install agentwall-security")
         raise typer.Exit(1)
 
 

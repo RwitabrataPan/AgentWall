@@ -3,7 +3,6 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-*.pyc
 
 # Test caches
 .pytest_cache/
@@ -81,3 +80,4 @@ logs/
 
 # Internal planning docs
 docs/superpowers/
+CLAUDE.md

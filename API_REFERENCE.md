@@ -2,7 +2,38 @@
 
 ---
 
-## Top-Level API
+## Zero-Configuration API
+
+### `import agentwall`
+
+The recommended entry point for v0.2.0+.
+
+```python
+import agentwall
+```
+
+Automatically instruments LangChain `AgentExecutor`, OpenAI Agents SDK `Runner`, and CrewAI `Crew` at import time. No explicit function calls required.
+
+**Disable:**
+
+```bash
+AGENTWALL_AUTO=0 python your_script.py
+```
+
+---
+
+## Top-Level Exports
+
+```python
+from agentwall import (
+    protect_agent,
+    protect_tool,
+    ToolType,
+    ToolAction,
+    ResourceCategory,
+    AgentWallSecurityException,
+)
+```
 
 ### `protect_agent`
 
@@ -23,7 +54,7 @@ Wraps any agent object for tool interception. Returns a `ProtectedAgent`.
 | Parameter | Description |
 |-----------|-------------|
 | `agent` | Any object with a `run()` method (or any framework agent) |
-| `goal` | User's stated objective. Omit to set later via `wall.set_goal()` |
+| `goal` | User's stated objective. Omit to set later via `wall.set_goal()` or auto-infer |
 | `db` | `Database` instance. Default: `~/.agentwall/data.db` |
 | `engine` | `SecurityEngine` instance. Default: auto-constructed from DB config |
 
@@ -68,7 +99,7 @@ wall = ProtectedAgent(agent, *, goal=None, db=None, engine=None)
 ```python
 wall.set_goal(goal: str) -> None
 ```
-Updates `_goal_ref[0]`, persists to DB, closes active goal segment, opens new segment.
+Updates `_goal_ref[0]`, persists to DB. Internally calls `GoalTracker.set_goal(goal)` with default reason `"user_update"` and confidence `1.0`, then syncs the session row.
 
 ```python
 wall.maybe_infer_goal(new_input: str) -> bool
@@ -109,6 +140,8 @@ with protect_agent(agent, goal="...") as wall:
 
 ## Framework Integrations
 
+These functions are supported for advanced use cases requiring explicit control. For standard use, prefer `import agentwall` (zero-config mode).
+
 ### OpenAI Agents SDK
 
 ```python
@@ -130,6 +163,8 @@ Returns `(wall, protected_agent)`. Pass `protected_agent` to `Runner.run()`.
 
 When `goal` is omitted, an `InputGuardrail` is injected to infer goal from the first `Runner.run()` input.
 
+When `tool_type_map` is omitted, tools are classified automatically via `classify_tool()`.
+
 ### LangChain
 
 ```python
@@ -150,6 +185,8 @@ wall = protect_langchain_agent(
 Mutates `executor.tools` in-place. Returns `wall`. Run `executor.invoke()` normally.
 
 When `goal` is omitted, patches `executor.invoke` to capture the first invocation input.
+
+When `tool_type_map` is omitted, tools are classified automatically via `classify_tool()`.
 
 Supports both sync (`@tool def`) and async (`@tool async def`) LangChain tools.
 
@@ -173,6 +210,34 @@ wall = protect_crewai_crew(
 Mutates all tools on all agents in-place. Returns `wall`. Run `crew.kickoff()` normally.
 
 When `goal` is omitted, patches `crew.kickoff` to infer from `inputs` or first task description.
+
+When `tool_type_map` is omitted, tools are classified automatically via `classify_tool()`.
+
+---
+
+## Tool Classifier
+
+```python
+from agentwall.utils.classifier import classify_tool
+
+tool_type = classify_tool(name: str, doc: str = "") -> ToolType
+```
+
+Infers `ToolType` from a function name and optional docstring.
+
+Uses word-level scoring: name-word matches score 3×, docstring-word matches score 1×. Returns the highest-scoring type. Falls back to `ToolType.GENERAL` when no keywords match.
+
+**Examples:**
+
+```python
+classify_tool("read_file", "")             # ToolType.FILESYSTEM
+classify_tool("run_command", "")           # ToolType.TERMINAL
+classify_tool("browse_web", "")            # ToolType.BROWSER
+classify_tool("query_database", "")        # ToolType.DATABASE
+classify_tool("send_email", "")            # ToolType.EMAIL
+classify_tool("call_api", "")             # ToolType.API
+classify_tool("do_thing", "does a thing") # ToolType.GENERAL
+```
 
 ---
 
@@ -201,7 +266,10 @@ class ToolType(str, Enum):
     API        = "api"
     DATABASE   = "database"
     EMAIL      = "email"
+    GENERAL    = "general"   # fallback when auto-classification finds no match
 ```
+
+`GENERAL` tools use `ToolAction.READ` as default action and add 10.0 base risk.
 
 ### ToolAction
 
@@ -310,7 +378,113 @@ engine = SecurityEngine(
 )
 ```
 
-`build_default_engine(db)`: reads thresholds from DB, constructs `ProviderChain` from configured providers, wires `PolicyEngine`. Returns ready `SecurityEngine`.
+`build_default_engine(db)`: reads thresholds from DB, constructs `ProviderChain` from configured providers, wires `PolicyEngine`, includes all four default detectors. Returns ready `SecurityEngine`.
+
+Default detectors (in evaluation order):
+1. `SensitiveResourceDetector`
+2. `ScopeExpansionDetector`
+3. `DataExfiltrationDetector`
+4. `GoalDriftDetector`
+
+---
+
+## Detectors
+
+### GoalDriftDetector
+
+```python
+from agentwall.security.detectors import GoalDriftDetector
+
+detector = GoalDriftDetector()
+hits = detector.detect(event: RuntimeEvent, history: list[RuntimeEvent]) -> list[str]
+```
+
+Detects when tool actions are inconsistent with the stated or inferred goal.
+
+| Hit label | Condition |
+|-----------|-----------|
+| `goal_drift:credential_access_off_goal` | `resource_category == CREDENTIALS` AND goal contains code-work keywords AND goal has no credential/auth/secret/key/token keywords |
+| `goal_drift:sensitive_target_off_goal` | Target matches `_CRED_TARGETS` patterns AND goal contains code-work keywords AND `resource_category != CREDENTIALS` (avoids double-hit with above) |
+| `goal_drift:unexpected_email` | `tool_type == EMAIL` AND `action == SEND` AND goal has no email/send/notify/report/upload/export keywords |
+| `goal_drift:system_access_off_goal` | `resource_category == SYSTEM` AND goal contains code-work keywords AND goal has no system/config/setup/install/deploy keywords |
+
+Returns empty list when goal is empty (no inference yet).
+
+---
+
+## GoalTracker
+
+```python
+from agentwall.security.goal_tracker import GoalTracker
+
+tracker = GoalTracker(session_id: str, db: Database, goal_ref: list[str])
+```
+
+### Methods
+
+```python
+tracker.set_goal(goal: str, reason: str = "user_update", confidence: float = 1.0) -> None
+```
+Closes active segment, updates `_goal_ref[0]`, opens new segment with given confidence.
+
+```python
+tracker.maybe_infer(new_input: str) -> bool
+```
+Applies two-signal heuristic. Sets goal if empty or transitions if new goal is significantly different. Returns `True` if goal changed.
+
+```python
+tracker.infer_initial_goal(text: str, confidence: float = 0.9) -> bool
+```
+Sets goal from `text` only if no goal is currently set. Returns `True` if goal was set. Does not override an existing goal.
+
+```python
+tracker.infer_runtime_goal(event: RuntimeEvent) -> bool
+```
+Post-execution hook. Checks `GoalDriftDetector` signals on `event`. If drift detected, synthesizes a candidate goal description and opens a new goal segment with `confidence=0.7` and `transition_reason="runtime_inference"`. Returns `True` if a new segment was opened.
+
+```python
+tracker.detect_transition(new_goal: str) -> bool
+```
+Public wrapper for the two-signal transition heuristic. Returns `True` if `new_goal` is substantially different from the current goal.
+
+```python
+tracker.detect_goal_drift(event: RuntimeEvent) -> list[str]
+```
+Runs `GoalDriftDetector` on `event`. Returns list of hit labels.
+
+```python
+tracker.create_goal_segment(goal: str, reason: str, confidence: float = 1.0) -> None
+```
+Explicitly creates a goal segment. Equivalent to calling `set_goal(goal, reason, confidence)`.
+
+### Transition Heuristic
+
+Two-signal, no LLM:
+
+```
+full_overlap  = |tokens(A) ∩ tokens(B)| / max(|A|, |B|)
+resource_A    = tokens(A) − action_verbs − stop_words
+resource_B    = tokens(B) − action_verbs − stop_words
+res_overlap   = |resource_A ∩ resource_B| / max(|resource_A|, |resource_B|)
+transition    = full_overlap < 0.4 AND res_overlap < 0.4
+```
+
+Thread-safe: `set_goal()` and `maybe_infer()` hold `threading.RLock`.
+
+### GoalSegmentSchema (Inspector response)
+
+```python
+class GoalSegmentSchema(BaseModel):
+    id: str
+    session_id: str
+    goal_text: str
+    started_at: float
+    ended_at: float | None       # None = active segment
+    transition_reason: str       # "initial" | "user_update" | "inference" |
+                                 # "heuristic_transition" | "runtime_inference"
+    confidence: float            # 1.0 = explicit, 0.9 = inferred, 0.8 = heuristic transition,
+                                 # 0.7 = runtime-inferred from drift signals
+```
 
 ---
 
@@ -356,7 +530,7 @@ Base URL: `http://127.0.0.1:8080/api`
 | GET | `/api/sessions/{id}` | Get session |
 | POST | `/api/sessions/{id}/end` | Mark session ended |
 | GET | `/api/sessions/{id}/events` | Tool events with evaluations |
-| GET | `/api/sessions/{id}/goals` | Goal segments ordered by started_at |
+| GET | `/api/sessions/{id}/goals` | Goal segments ordered by started_at (includes confidence) |
 
 ### Policies
 
@@ -426,31 +600,3 @@ class AnalysisResult:
 ```
 
 Post-execution analysis **never retroactively blocks**. Pre-execution decision is final.
-
----
-
-## GoalTracker
-
-```python
-from agentwall.security.goal_tracker import GoalTracker
-
-tracker = GoalTracker(session_id, db, goal_ref)
-tracker.set_goal("new goal", reason="user_update")   # closes active segment, opens new
-tracker.maybe_infer("Fix login API")                  # True if goal changed
-```
-
-Transition heuristic: full token overlap < 0.4 **AND** resource token overlap < 0.4. Action verbs and stop words stripped before resource comparison.
-
-Thread-safe: `set_goal()` and `maybe_infer()` acquire `threading.RLock`.
-
-### GoalSegmentSchema (Inspector response)
-
-```python
-class GoalSegmentSchema(BaseModel):
-    id: str
-    session_id: str
-    goal_text: str
-    started_at: float
-    ended_at: float | None       # None = active segment
-    transition_reason: str       # "initial" | "user_update" | "inference" | "heuristic_transition"
-```

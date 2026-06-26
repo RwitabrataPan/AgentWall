@@ -1,25 +1,64 @@
 # AgentWall Architecture
 
-This document describes the actual implemented architecture of AgentWall v0.1.0.
+This document describes the implemented architecture of AgentWall v0.2.0.
 
 ---
 
 ## Overview
 
 ```
-User Goal
+User Goal (explicit or inferred)
+  └─ Auto Instrumentation Layer (agentwall.auto)
+  │      OR
   └─ protect_*(agent, goal=..., db=None, engine=None)
          │
          ├─ ProtectedAgent (session lifecycle, goal tracking)
          │       └─ ToolInterceptor (per-call interception)
          │               └─ SecurityEngine (evaluation pipeline)
-         │                       ├─ Detectors
+         │                       ├─ Detectors (incl. GoalDriftDetector)
          │                       ├─ Rule Engine
          │                       ├─ Policy Engine
          │                       └─ ProviderChain (LLM, optional)
          │
          └─ EventManager → SQLite (~/.agentwall/data.db)
 ```
+
+---
+
+## Auto Instrumentation Layer
+
+`agentwall/auto.py`. Activated by `import agentwall` unless `AGENTWALL_AUTO=0`.
+
+### LangChain Patching
+
+Patches `AgentExecutor.__init__`. When any `AgentExecutor` is created:
+1. Calls `protect_langchain_agent(self, db=..., engine=...)` to wrap all tools
+2. Sets `self._aw_auto_protected = True` (idempotency guard)
+3. Registers `weakref.finalize(executor, wall.end_session)` for automatic session cleanup
+4. Registers `atexit` handler as fallback
+
+### CrewAI Patching
+
+Patches `Crew.__init__`. Same pattern as LangChain.
+
+### OpenAI Agents SDK Patching
+
+Patches `Runner.run` classmethod. Each `Runner.run()` invocation:
+1. Creates a new `(wall, protected_agent)` pair for the run
+2. Infers goal from the input string
+3. Runs the original `Runner.run(protected, input, **kwargs)`
+4. Calls `wall.end_session()` in `finally`
+
+One session per `Runner.run()` call (OpenAI's per-run model, not per-agent).
+
+### Idempotency
+
+Tools marked with `_aw_wrapped = True` on the wrapped function (LangChain/CrewAI). Already-wrapped tools are skipped. Prevents double-interception when explicit `protect_*` is also called.
+
+### Session Lifecycle
+
+- `weakref.finalize(agent_obj, wall.end_session)` — closes session when agent object is garbage collected
+- `atexit.register(...)` — closes all open sessions on process exit
 
 ---
 
@@ -31,15 +70,39 @@ Defined in `agentwall/interceptors/__init__.py`. Thin wrapper over `ProtectedAge
 
 ### `protect_openai_agent(agent, *, goal=None, ...)`
 
-Defined in `agentwall/integrations/openai_agents.py`. Returns `(wall, protected_agent)`. Wraps `FunctionTool.on_invoke_tool`. Injects `InputGuardrail` for goal inference when `goal` is omitted.
+Defined in `agentwall/integrations/openai_agents.py`. Returns `(wall, protected_agent)`. Wraps `FunctionTool.on_invoke_tool`. Injects `InputGuardrail` for goal inference when `goal` is omitted. Auto-classifies tools when `tool_type_map` is omitted.
 
 ### `protect_langchain_agent(executor, *, goal=None, ...)`
 
-Defined in `agentwall/integrations/langchain.py`. Patches `tool.func` (sync tools) or `tool.coroutine` (async tools) in-place. Patches `executor.invoke` for goal inference.
+Defined in `agentwall/integrations/langchain.py`. Patches `tool.func` (sync tools) or `tool.coroutine` (async tools) in-place. Patches `executor.invoke` for goal inference. Auto-classifies tools when `tool_type_map` is omitted.
 
 ### `protect_crewai_crew(crew, *, goal=None, ...)`
 
-Defined in `agentwall/integrations/crewai.py`. Patches `tool.func` for all tools on all agents. Patches `crew.kickoff` for goal inference.
+Defined in `agentwall/integrations/crewai.py`. Patches `tool.func` for all tools on all agents. Patches `crew.kickoff` for goal inference. Auto-classifies tools when `tool_type_map` is omitted.
+
+---
+
+## Automatic Tool Classification
+
+`agentwall/utils/classifier.py`. Called by all `protect_*` functions when `tool_type_map` is omitted.
+
+```python
+classify_tool(name: str, doc: str = "") -> ToolType
+```
+
+**Algorithm:** Word-level scoring. Split name on `_` and spaces. Name-word matches score 3×; docstring-word matches score 1×. Sum scores per `ToolType` pattern set. Return highest-scoring type, or `ToolType.GENERAL` if all scores are zero.
+
+**Pattern sets:**
+
+| ToolType | Keywords (sample) |
+|----------|------------------|
+| FILESYSTEM | file, directory, path, read_file, write_file |
+| TERMINAL | run, exec, shell, bash, command |
+| BROWSER | browse, web, url, scrape, navigate |
+| DATABASE | sql, database, query, queries |
+| EMAIL | email, mail, smtp, send_email |
+| API | api, http, request, endpoint, webhook |
+| GENERAL | (fallback — no keyword match) |
 
 ---
 
@@ -93,7 +156,7 @@ tool.func(*args, **kwargs) called by agent
 
 ### Stage 1: Detectors
 
-All three detectors live in `agentwall/security/detectors.py`. Each returns `list[str]` hit labels. Each unique hit adds `10.0` to the risk score.
+All detectors live in `agentwall/security/detectors.py`. Each returns `list[str]` hit labels. Each unique hit adds `10.0` to the risk score.
 
 **SensitiveResourceDetector**
 - Matches `event.target` against credential file patterns (`.ssh/`, `.env`, `id_rsa`, `credentials`, etc.)
@@ -101,13 +164,20 @@ All three detectors live in `agentwall/security/detectors.py`. Each returns `lis
 
 **ScopeExpansionDetector**
 - Requires ≥ 3 prior events.
-- Extracts resource type from target path (code, config, system, credential).
-- Flags if current resource type differs from dominant type in history.
-- Flags `unrelated_resource_access` at ≥ 5 prior events if new category unseen in history.
+- Hits `new_tool_type_introduced` when `event.tool_type` not seen in prior history.
+- Hits `privilege_escalation` when `event.resource_category` is CREDENTIALS or SYSTEM and no prior event accessed those categories.
+- At ≥ 5 prior events: hits `unrelated_resource_access` when a single tool_type dominates history at ≥ 70% share and the current event uses a different tool_type.
 
 **DataExfiltrationDetector**
 - Matches against external upload/send patterns (FTP, S3, SMTP, webhook, exfil keywords).
 - No history required.
+
+**GoalDriftDetector** *(v0.2.0)*
+- Compares tool action characteristics against the current goal text. Returns empty list when goal is empty.
+- `goal_drift:credential_access_off_goal` — `resource_category == CREDENTIALS` AND goal contains code-work keywords AND goal has no credential/auth/secret/key/token keywords.
+- `goal_drift:sensitive_target_off_goal` — target matches `_CRED_TARGETS` patterns AND goal contains code-work keywords AND `resource_category != CREDENTIALS` (prevents double-hit with above).
+- `goal_drift:unexpected_email` — `tool_type == EMAIL` AND `action == SEND` AND goal has no email/send/notify/report/upload/export keywords.
+- `goal_drift:system_access_off_goal` — `resource_category == SYSTEM` AND goal contains code-work keywords AND goal has no system/config/setup/install/deploy keywords.
 
 ### Stage 2: Rule Engine
 
@@ -115,7 +185,7 @@ All three detectors live in `agentwall/security/detectors.py`. Each returns `lis
 
 Base risk by `(tool_type, action)` from `_RULE_MAP`. Category bonus from `_category_bonus(resource_category)`. Total risk += unique detector hits × 10.0, clamped to 100.0.
 
-High-risk combinations (examples): TERMINAL.EXECUTE = 55.0, FILESYSTEM.DELETE on CREDENTIALS = 55+20=75.0, EMAIL.SEND = 50.0.
+High-risk combinations (examples): TERMINAL.EXECUTE = 55.0, FILESYSTEM.DELETE on CREDENTIALS = 55+20=75.0, EMAIL.SEND = 50.0. GENERAL type = 10.0 base.
 
 ### Stage 3: Policy Engine
 
@@ -165,20 +235,36 @@ All already-wrapped tools see the update on next call.
 
 ### Per Framework
 
-**OpenAI Agents SDK**: `InputGuardrail` injected into `agent.input_guardrails`. Fires before first LLM call. Receives raw `Runner.run()` input string. Calls `wall.maybe_infer_goal(text)` — detects transitions on each Runner.run() call.
+**OpenAI Agents SDK**: `InputGuardrail` injected into `agent.input_guardrails`. Fires before first LLM call. Receives raw `Runner.run()` input string. Calls `wall.maybe_infer_goal(text)`.
 
-**LangChain**: `executor.invoke` patched. Extracts from `input`, `query`, `task` keys or first dict value. Calls `wall.maybe_infer_goal(inferred)` — detects transitions on re-invoke.
+**LangChain**: `executor.invoke` patched. Extracts from `input`, `query`, `task` keys or first dict value. Calls `wall.maybe_infer_goal(inferred)`.
 
-**CrewAI**: `crew.kickoff` patched. Extracts from `inputs` dict first value. Falls back to `tasks[0].description`. Calls `wall.maybe_infer_goal(inferred)` on every kickoff.
+**CrewAI**: `crew.kickoff` patched. Extracts from `inputs` dict first value. Falls back to `tasks[0].description`. Calls `wall.maybe_infer_goal(inferred)`.
 
-### GoalTracker
+### GoalTracker v2
 
-`agentwall/security/goal_tracker.py`. Owned by `ProtectedAgent`, created at init time.
+`agentwall/security/goal_tracker.py`. Owned by `ProtectedAgent`.
 
-Holds `_goal_ref: list[str]` reference (same list shared with tool closures). When goal changes:
-1. Closes active segment: `UPDATE goal_segments SET ended_at=NOW`
-2. Updates `_goal_ref[0]` — all tool closures immediately see the new goal
-3. Opens new segment: `INSERT goal_segments`
+**New in v0.2.0:**
+
+`infer_initial_goal(text, confidence=0.9)` — sets goal if empty. Does not override an existing goal. Returns `True` if goal was set.
+
+`infer_runtime_goal(event)` — post-execution hook. Runs `GoalDriftDetector` on the event. If drift signals found, synthesizes a human-readable candidate goal description and opens a new goal segment with `confidence=0.7` and `reason="runtime_inference"`. Returns `True` if goal changed.
+
+`detect_transition(new_goal)` — public wrapper for the two-signal heuristic.
+
+`detect_goal_drift(event)` — public wrapper for `GoalDriftDetector.detect()`.
+
+`create_goal_segment(goal, reason, confidence)` — explicit segment creation API.
+
+**Confidence values:**
+
+| Source | Confidence |
+|--------|-----------|
+| Explicit `goal="..."` | 1.0 |
+| Inferred from first input (`maybe_infer` / `infer_initial_goal`) | 0.9 |
+| Heuristic transition (`maybe_infer` on later inputs) | 0.8 |
+| Runtime inference from drift signals (`infer_runtime_goal`) | 0.7 |
 
 **Transition heuristic** (`_is_transition`) — two-signal, no LLM:
 ```
@@ -189,11 +275,7 @@ res_overlap   = |resource_A ∩ resource_B| / max(|resource_A|, |resource_B|)
 transition    = full_overlap < 0.4 AND res_overlap < 0.4
 ```
 
-Strips action verbs and stop words before the resource check. Prevents pure verb changes ("Build login API" → "Write login tests") from creating new segments. True resource changes ("Build login API" → "Create billing service") still transition.
-
 Thread-safe: `set_goal()` and `maybe_infer()` hold `threading.RLock`.
-
-**`ProtectedAgent.maybe_infer_goal(new_input)`**: called by inference patches. Returns `True` if goal changed. Also updates session DB via `SessionManager.update_goal()`.
 
 ---
 
@@ -262,7 +344,9 @@ goal_segments (
     goal_text TEXT,
     started_at REAL,
     ended_at REAL,                       -- NULL while active
-    transition_reason TEXT               -- "initial", "user_update", "inference", "heuristic_transition"
+    transition_reason TEXT,              -- "initial" | "user_update" | "inference" |
+                                         --   "heuristic_transition" | "runtime_inference"
+    confidence REAL DEFAULT 1.0          -- added in v0.2.0
 )
 
 policies (id INTEGER PK AUTOINCREMENT, name TEXT UNIQUE, enabled BOOL, config JSON, created_at REAL, priority INTEGER DEFAULT 0)
@@ -272,7 +356,7 @@ provider_settings (provider TEXT PK, model TEXT, priority INTEGER, enabled BOOL,
 
 `policies` table also stores `thresholds` as a special row (name=`"thresholds"`, config=`{low_threshold, high_threshold}`).
 
-New columns on `evaluations` are added via `ALTER TABLE` migrations in `Database._migrate()`. `goal_segments` created via `Base.metadata.create_all()` — no migration needed for new tables.
+New columns are added via `ALTER TABLE` migrations in `Database._migrate()`. `goal_segments.confidence` added via migration in v0.2.0.
 
 ---
 
@@ -296,18 +380,17 @@ FastAPI app in `agentwall/inspector/server.py`. `StaticFiles` mounted at `/` fro
 
 Routers: sessions, events, goals, evaluations, policies, providers, config, health, WebSocket.
 
-`GET /api/sessions/{session_id}/goals` — returns list of `GoalSegmentSchema` ordered by `started_at`.
+`GET /api/sessions/{session_id}/goals` — returns list of `GoalSegmentSchema` ordered by `started_at`. Includes `confidence` field on each segment.
 
-`EvaluationSchema` in `agentwall/models/schemas.py` includes post-execution fields: `post_execution_risk`, `result_classification`, `result_detector_hits`, `result_metadata`. These are returned by the existing events endpoint (`GET /api/sessions/{id}/events`).
+`EvaluationSchema` in `agentwall/models/schemas.py` includes post-execution fields: `post_execution_risk`, `result_classification`, `result_detector_hits`, `result_metadata`.
 
 ### Frontend
 
-Built React app at `agentwall/inspector/ui/dist/`:
-- `index.html` (404B)
-- `assets/index-CdF3waHo.js` (167KB)
-- `assets/index-OKzO_O9l.css` (14KB)
+Built React app at `agentwall/inspector/ui/dist/`.
 
 5 pages: Overview, Sessions, Timeline, Providers, Policies.
+
+The Timeline page displays goal segments including confidence scores and transition reasons.
 
 ### Real-time Updates
 
@@ -334,12 +417,20 @@ No SQLite polling. No external infrastructure. `EventBus` is a no-op when no WS 
 
 `FunctionTool` is an immutable dataclass. AgentWall uses `dataclasses.replace(ft, on_invoke_tool=_wrapped)` to create a new tool. All wrapped tools collected into a new `Agent` via `dataclasses.replace(agent, tools=wrapped_tools)`. Original agent unchanged.
 
+Auto-classification: when `tool_type_map` is omitted, `classify_tool(ft.name, ft.description)` determines `ToolType` for each function tool.
+
 ### LangChain
 
 `StructuredTool` is mutable. AgentWall patches `tool.func` (sync tools) or `tool.coroutine` (async tools) in-place. `executor.tools` list is not replaced — the tool objects themselves are mutated.
 
-Async tools: `_arun()` dispatches via `self.coroutine`; `_run()` dispatches via `self.func`. AgentWall patches both surfaces.
+Idempotency: `_aw_wrapped = True` is set on the wrapped function. `wrap_langchain_tool` skips tools where `getattr(tool.func, "_aw_wrapped", False)` is True.
+
+Auto-classification: when `tool_type_map` is omitted, `classify_tool(tool.name, tool.description)` determines `ToolType`.
 
 ### CrewAI
 
 `BaseTool` subclass is mutable. AgentWall patches `tool.func` in-place. Both `run()` (sync) and `arun()` (async) dispatch via `self.func` in the concrete `Tool` class.
+
+Idempotency: same `_aw_wrapped` marker as LangChain.
+
+Auto-classification: when `tool_type_map` is omitted, `classify_tool(tool.name, tool.description)` determines `ToolType`.

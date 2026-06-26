@@ -2,9 +2,15 @@
 AgentWall + LangChain example.
 
 Requires: OPENAI_API_KEY environment variable.
-Install:   pip install agentwall langchain langchain-openai
+Install:   pip install agentwall-security[langchain]
 
 Run:       python examples/langchain/example.py
+
+Zero-config mode (v0.2.0+):
+    import agentwall  # auto-instruments AgentExecutor on import
+    executor.invoke({"input": "..."})  # done — no protect_* needed
+
+Advanced usage: use protect_langchain_agent() for explicit control.
 """
 from __future__ import annotations
 
@@ -15,8 +21,6 @@ from langchain_openai import ChatOpenAI
 from langchain import hub
 from langchain.agents import AgentExecutor, create_openai_tools_agent
 
-from agentwall.core.types import ToolType
-from agentwall.integrations.langchain import protect_langchain_agent
 from agentwall.security.exceptions import AgentWallSecurityException
 
 
@@ -34,11 +38,32 @@ def list_directory(directory: str) -> str:
     return "\n".join(_os.listdir(directory))
 
 
-def main() -> None:
+def zero_config_example() -> None:
+    """Zero-config: just import agentwall. No protect_* needed."""
+    import agentwall  # noqa: F401 — triggers auto-instrumentation
+
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     tools = [read_file, list_directory]
+    prompt = hub.pull("hwchase17/openai-tools-agent")
 
-    # Pull a standard tool-use prompt
+    agent = create_openai_tools_agent(llm, tools, prompt)
+    executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+    # AgentWall auto-protects this executor. Goal inferred from input.
+    try:
+        result = executor.invoke({"input": "Fix the authentication bug in login.tsx"})
+        print("Agent output:", result["output"])
+    except AgentWallSecurityException as e:
+        print(f"Blocked by AgentWall: {e}")
+
+
+def explicit_example() -> None:
+    """Advanced: explicit protect_langchain_agent for full control."""
+    from agentwall.core.types import ToolType
+    from agentwall.integrations.langchain import protect_langchain_agent
+
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    tools = [read_file, list_directory]
     prompt = hub.pull("hwchase17/openai-tools-agent")
 
     agent = create_openai_tools_agent(llm, tools, prompt)
@@ -69,4 +94,5 @@ if __name__ == "__main__":
     if not os.getenv("OPENAI_API_KEY"):
         print("Set OPENAI_API_KEY to run this example.")
     else:
-        main()
+        # Zero-config is the recommended path
+        zero_config_example()

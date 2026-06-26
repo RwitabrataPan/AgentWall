@@ -19,6 +19,7 @@ class ToolType(str, Enum):
     API = "api"
     DATABASE = "database"
     EMAIL = "email"
+    GENERAL = "general"
 
 
 class ToolAction(str, Enum):

@@ -2,9 +2,15 @@
 AgentWall + OpenAI Agents SDK example.
 
 Requires: OPENAI_API_KEY environment variable.
-Install:   pip install agentwall openai-agents
+Install:   pip install agentwall-security[openai-agents]
 
 Run:       python examples/openai_agents/example.py
+
+Zero-config mode (v0.2.0+):
+    import agentwall         # auto-instruments Runner.run on import
+    await Runner.run(agent, input)  # done — no protect_* needed
+
+Advanced usage: use protect_openai_agent() for explicit control.
 """
 from __future__ import annotations
 
@@ -13,8 +19,6 @@ import os
 
 from agents import Agent, Runner, function_tool
 
-from agentwall.core.types import ToolType
-from agentwall.integrations.openai_agents import protect_openai_agent
 from agentwall.security.exceptions import AgentWallSecurityException
 
 
@@ -29,8 +33,7 @@ def read_file(path: str) -> str:
 def list_directory(directory: str) -> str:
     """List files in a directory."""
     import os as _os
-    entries = _os.listdir(directory)
-    return "\n".join(entries)
+    return "\n".join(_os.listdir(directory))
 
 
 agent = Agent(
@@ -44,7 +47,26 @@ agent = Agent(
 )
 
 
-async def main() -> None:
+async def zero_config_example() -> None:
+    """Zero-config: just import agentwall. No protect_* needed."""
+    import agentwall  # noqa: F401 — triggers auto-instrumentation
+
+    # AgentWall auto-protects each Runner.run call. Goal inferred from input.
+    try:
+        result = await Runner.run(
+            agent,
+            "Fix the authentication bug in login.tsx",
+        )
+        print("Agent output:", result.final_output)
+    except AgentWallSecurityException as e:
+        print(f"Blocked by AgentWall: {e}")
+
+
+async def explicit_example() -> None:
+    """Advanced: explicit protect_openai_agent for full control."""
+    from agentwall.core.types import ToolType
+    from agentwall.integrations.openai_agents import protect_openai_agent
+
     wall, protected_agent = protect_openai_agent(
         agent,
         goal="Fix the authentication bug in login.tsx",
@@ -73,4 +95,5 @@ if __name__ == "__main__":
     if not os.getenv("OPENAI_API_KEY"):
         print("Set OPENAI_API_KEY to run this example.")
     else:
-        asyncio.run(main())
+        # Zero-config is the recommended path
+        asyncio.run(zero_config_example())

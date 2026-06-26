@@ -60,6 +60,7 @@ class GoalSegmentSchema(BaseModel):
     started_at: float
     ended_at: float | None = None
     transition_reason: str
+    confidence: float = 1.0
 
     model_config = {"from_attributes": True}
 

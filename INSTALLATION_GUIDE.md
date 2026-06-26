@@ -274,9 +274,69 @@ Default:
 127.0.0.1:8080
 ```
 
+---
+
 ## Framework Integration
 
-### OpenAI Agents SDK
+### Zero-Configuration (Recommended)
+
+The simplest integration. Add one import before running your agent.
+
+```python
+import agentwall  # auto-instruments all supported frameworks
+```
+
+AgentWall automatically detects and instruments LangChain `AgentExecutor`, OpenAI Agents SDK `Runner`, and CrewAI `Crew` at import time. Goals, sessions, and tool classification are all handled automatically.
+
+**LangChain:**
+
+```python
+import agentwall
+from langchain.agents import AgentExecutor
+
+executor = AgentExecutor(agent=agent, tools=tools)
+result = executor.invoke({"input": "Fix the authentication bug in login.tsx"})
+# AgentWall intercepts all tool calls automatically
+```
+
+**OpenAI Agents SDK:**
+
+```python
+import agentwall
+from agents import Runner
+
+result = await Runner.run(agent, "Fix the authentication bug in login.tsx")
+# AgentWall intercepts all tool calls automatically
+```
+
+**CrewAI:**
+
+```python
+import agentwall
+from crewai import Crew
+
+result = crew.kickoff(inputs={"task": "Fix authentication bug"})
+# AgentWall intercepts all tool calls automatically
+```
+
+**Disable auto-instrumentation:**
+
+```bash
+AGENTWALL_AUTO=0 python your_script.py
+```
+
+---
+
+### Advanced Usage — Explicit Protection
+
+Use explicit protection functions when you need:
+
+* Manual session lifecycle control
+* Explicit goal strings
+* Custom tool type mappings
+* Programmatic access to `wall.session_id`
+
+#### OpenAI Agents SDK
 
 ```python
 from agents import Agent, Runner, function_tool
@@ -305,7 +365,7 @@ finally:
     wall.end_session()
 ```
 
-### LangChain
+#### LangChain
 
 ```python
 from langchain_core.tools import tool
@@ -331,7 +391,7 @@ result = executor.invoke({"input": "Read login.tsx"})
 wall.end_session()
 ```
 
-### CrewAI
+#### CrewAI
 
 ```python
 from crewai import Agent as CrewAgent, Task, Crew
@@ -354,7 +414,7 @@ result = crew.kickoff(inputs={"task": "Fix login bug"})
 wall.end_session()
 ```
 
-### Direct SDK
+#### Direct SDK
 
 ```python
 from agentwall import protect_agent
@@ -382,7 +442,19 @@ wall.end_session()
 
 ## Goal Inference
 
-`goal` is optional in all `protect_*` calls. When omitted, AgentWall infers the goal from the agent's first execution input.
+`goal` is optional in all `protect_*` calls and in zero-configuration mode. When omitted, AgentWall infers the goal automatically.
+
+### Automatic Inference
+
+In zero-config mode, goals are inferred from the agent's first input:
+
+```python
+import agentwall
+result = executor.invoke({"input": "Fix the login page bug"})
+# goal automatically set to "Fix the login page bug"
+```
+
+### Explicit Inference (Advanced Mode)
 
 ```python
 # Goal inferred from Runner.run() input
@@ -394,6 +466,35 @@ result = await Runner.run(protected, "Fix the login page bug")
 wall = protect_langchain_agent(executor)
 executor.invoke({"input": "Fix the login page bug"})
 # wall.goal == "Fix the login page bug"
+```
+
+### Goal Transitions
+
+AgentWall tracks goal changes during a session. When a new kickoff/invoke detects a substantially different goal, a new goal segment is recorded with a `transition_reason` and `confidence` score.
+
+---
+
+## Automatic Tool Classification
+
+In zero-config mode and when `tool_type_map` is not provided, AgentWall classifies tools automatically from their function name and docstring.
+
+| Tool name pattern | Classified as |
+|------------------|---------------|
+| `read_file`, `write_file`, `list_directory` | `filesystem` |
+| `run_command`, `execute_bash`, `run_shell` | `terminal` |
+| `browse_web`, `fetch_url`, `scrape_page` | `browser` |
+| `query_database`, `run_sql`, `execute_sql` | `database` |
+| `send_email`, `compose_mail` | `email` |
+| `call_api`, `http_post`, `fetch_api` | `api` |
+| Anything else | `general` |
+
+Override with an explicit `tool_type_map` when auto-classification is inaccurate:
+
+```python
+wall = protect_langchain_agent(
+    executor,
+    tool_type_map={"my_tool": ToolType.FILESYSTEM},
+)
 ```
 
 ---
@@ -463,6 +564,13 @@ Run `agentwall config` to add a provider. Without a configured provider, high-ri
 Set `engine=SecurityEngine(detectors=[])` in tests to disable all detectors, or use a custom low threshold:
 ```python
 engine = SecurityEngine(warn_threshold=100.0, block_threshold=100.0)
+```
+
+Also set `AGENTWALL_AUTO=0` in your test environment to prevent auto-instrumentation from interfering with explicit `protect_*` calls:
+```python
+# conftest.py
+import os
+os.environ["AGENTWALL_AUTO"] = "0"
 ```
 
 ---

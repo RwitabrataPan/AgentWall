@@ -29,6 +29,7 @@ AgentWall detects:
 * Data Exfiltration
 * Unauthorized Actions
 * Behavioral Drift
+* Goal Drift
 
 ---
 
@@ -63,33 +64,143 @@ depending on risk and alignment.
 
 ---
 
+## Installation
+
+```bash
+pip install agentwall-security
+```
+
+---
+
+## Quick Start — Zero Configuration
+
+```python
+import agentwall  # auto-instruments all supported frameworks
+```
+
+That's it. No `protect_*` calls. No session management. No goal strings.
+
+AgentWall automatically:
+
+* Detects LangChain, OpenAI Agents SDK, and CrewAI at import time
+* Instruments runtimes via lightweight patching
+* Creates sessions per agent run
+* Infers goals from the agent's first input
+* Tracks goal transitions throughout the session
+* Classifies tool types from function names and docstrings
+* Evaluates runtime actions before execution
+* Records audit events to `~/.agentwall/data.db`
+
+### LangChain
+
+```python
+import agentwall
+
+executor = AgentExecutor(agent=agent, tools=tools)
+result = executor.invoke({"input": "Fix the authentication bug in login.tsx"})
+```
+
+### OpenAI Agents SDK
+
+```python
+import agentwall
+
+result = await Runner.run(agent, "Fix the authentication bug in login.tsx")
+```
+
+### CrewAI
+
+```python
+import agentwall
+
+result = crew.kickoff(inputs={"task": "Fix authentication bug"})
+```
+
+### Disable Auto-Instrumentation
+
+```bash
+AGENTWALL_AUTO=0 python your_script.py
+```
+
+---
+
+## Advanced Usage
+
+Use explicit protection functions for full manual control over sessions, goals, and tool type mappings.
+
+```python
+from agentwall.integrations.langchain import protect_langchain_agent
+from agentwall.core.types import ToolType
+
+wall = protect_langchain_agent(
+    executor,
+    goal="Fix the authentication bug in login.tsx",
+    tool_type_map={
+        "read_file": ToolType.FILESYSTEM,
+        "list_directory": ToolType.FILESYSTEM,
+    },
+)
+
+result = executor.invoke({"input": "Read login.tsx and find the bug."})
+wall.end_session()
+```
+
+See [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md) for full advanced usage examples.
+
+---
+
 ## Key Features
+
+### Zero Configuration
+
+One import enables automatic protection for all supported frameworks with no code changes required.
+
+### Automatic Goal Inference
+
+Goals are inferred from agent inputs automatically. Goal history, transitions, and confidence are recorded throughout the session.
+
+### Goal Drift Detection
+
+Detects when agent actions deviate from the inferred or stated goal — a key signal for prompt injection compromise.
+
+### Automatic Tool Classification
+
+Tools are classified by type (filesystem, terminal, API, database, email, browser) from function names and docstrings. No manual `tool_type_map` required.
 
 ### Runtime Security
 
-Behavior-based protection for AI agents.
+Behavior-based protection. Evaluates actions before execution. Raises `AgentWallSecurityException` on BLOCK.
 
 ### Goal Tracking
 
-Automatically infers and tracks goals throughout a session.
+Tracks goal segments throughout a session. Detects transitions using a two-signal heuristic (token overlap + resource token overlap). Records confidence per segment.
 
 ### Policy Engine
 
-Create custom allow/warn/block rules.
+Create custom allow/warn/block rules targeting specific tool types, actions, resource categories, and path patterns.
 
 ### Post-Execution Analysis
 
-Classifies tool outcomes and records security-relevant findings without storing sensitive outputs.
+Classifies tool outcomes after execution. Detects sensitive data exposure, bulk data access, external transfers, and email dispatch. Audit-only — never retroactively blocks.
 
 ### Inspector
 
-Native desktop security console powered by PyWebView.
-
-Launch with:
+Native desktop security console. Launch with:
 
 ```bash
 agentwall inspect
 ```
+
+Features:
+
+* Session Timeline
+* Goal Timeline (goal segments with confidence and transition reasons)
+* Security Decisions
+* Risk Scores
+* Detector Results
+* Policy Management
+* Provider Configuration
+* Export (JSON/CSV)
 
 ### Provider Agnostic
 
@@ -108,68 +219,6 @@ Supports:
 * OpenAI Agents SDK
 * LangChain
 * CrewAI
-
----
-
-## Installation
-
-```bash
-pip install agentwall-security
-```
-
----
-
-## Quick Start
-
-### OpenAI Agents SDK
-
-```python
-from agentwall import protect_agent
-
-agent = protect_agent(agent)
-
-result = await Runner.run(
-    agent,
-    "Build a FastAPI CRUD API"
-)
-```
-
-### LangChain
-
-```python
-from agentwall.integrations import protect_langchain_agent
-
-executor = protect_langchain_agent(executor)
-```
-
-### CrewAI
-
-```python
-from agentwall.integrations import protect_crewai_crew
-
-crew = protect_crewai_crew(crew)
-```
-
----
-
-## Inspector
-
-Launch the desktop Inspector:
-
-```bash
-agentwall inspect
-```
-
-Features:
-
-* Session Timeline
-* Security Decisions
-* Risk Scores
-* Goal Segments
-* Detector Results
-* Policy Management
-* Provider Configuration
-* Export (JSON/CSV)
 
 ---
 
@@ -199,7 +248,7 @@ AgentWall does **not** primarily operate as:
 * Jailbreak detector
 * Content moderation system
 
-Instead it evaluates the consequences of agent actions.
+It evaluates the consequences of agent actions relative to the user's stated or inferred goal.
 
 ---
 
@@ -209,8 +258,8 @@ Local-only architecture.
 
 Uses:
 
-* SQLite
-* OS Keyring
+* SQLite (`~/.agentwall/data.db`)
+* OS Keyring (API keys only)
 * Local FastAPI backend
 * Local Inspector UI
 
@@ -221,20 +270,22 @@ No cloud dependency required.
 ## Architecture
 
 ```text
-Goal Tracking
-        ↓
+Auto Instrumentation Layer
+    ↓
+Goal Inference & Tracking
+    ↓
 Security Engine
-        ↓
+    ↓
 Policy Evaluation
-        ↓
-Risk Assessment
-        ↓
+    ↓
+Risk Assessment + Goal Drift Detection
+    ↓
 Optional LLM Evaluation
-        ↓
-Decision
-        ↓
+    ↓
+Decision (ALLOW / WARN / BLOCK)
+    ↓
 Tool Execution
-        ↓
+    ↓
 Post-Execution Analysis
 ```
 
@@ -242,13 +293,12 @@ Post-Execution Analysis
 
 ## Documentation
 
-* Installation Guide
-* Architecture Guide
-* API Reference
-* Security Guide
-* Testing Guide
-
-See the repository documentation for details.
+* [Installation Guide](INSTALLATION_GUIDE.md) — installation, configuration, framework integration
+* [Architecture](ARCHITECTURE.md) — internal design and component details
+* [API Reference](API_REFERENCE.md) — all public APIs
+* [Security Policy](SECURITY.md) — threat model and privacy
+* [Testing Guide](TESTING_GUIDE.md) — running and writing tests
+* [Changelog](CHANGELOG.md) — version history
 
 ---
 
@@ -260,8 +310,8 @@ MIT License.
 
 ## Status
 
-**v0.1.0**
+**v0.2.0**
 
-Production-ready initial release.
+Production-ready.
 
 Open-source and self-hosted.

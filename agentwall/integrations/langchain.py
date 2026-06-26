@@ -63,7 +63,12 @@ def wrap_langchain_tool(
 
     LangChain's _run() calls self.func; _arun() calls self.coroutine when set.
     Patching both surfaces ensures ainvoke() paths are intercepted too.
+    Idempotent: already-wrapped tools are skipped.
     """
+    # Skip if already wrapped (e.g., auto-mode already wrapped this tool)
+    if getattr(tool.func, "_aw_wrapped", False):
+        return tool
+
     resolved_action = action or _default_action(tool_type)
     _ref = goal_ref if goal_ref is not None else [goal or ""]
 
@@ -93,6 +98,7 @@ def wrap_langchain_tool(
             interceptor.after_execute(event, result)
             return result
 
+        _wrapped_async._aw_wrapped = True  # type: ignore[attr-defined]
         tool.coroutine = _wrapped_async
     else:
         original_func = tool.func
@@ -104,6 +110,7 @@ def wrap_langchain_tool(
             interceptor.after_execute(event, result)
             return result
 
+        _wrapped._aw_wrapped = True  # type: ignore[attr-defined]
         tool.func = _wrapped
 
     return tool
@@ -124,6 +131,14 @@ def protect_langchain_agent(
     Returns the ProtectedAgent (wall) for session lifecycle management.
     The executor's tools are modified in-place; invoke executor normally.
     """
+    # Guard: already protected (auto or explicit) — return existing wall, no new session.
+    if getattr(executor, "_aw_auto_protected", False):
+        existing = getattr(executor, "_aw_wall", None)
+        if existing is not None:
+            if goal:
+                existing.set_goal(goal)
+            return existing
+
     from agentwall.interceptors.agent import ProtectedAgent
     from agentwall.security.engine import build_default_engine
 
@@ -141,7 +156,11 @@ def protect_langchain_agent(
 
     for tool in getattr(executor, "tools", []):
         if isinstance(tool, BaseTool):
-            tt = tool_map.get(tool.name, ToolType.API)
+            if tool.name in tool_map:
+                tt = tool_map[tool.name]
+            else:
+                from agentwall.utils.classifier import classify_tool
+                tt = classify_tool(tool.name, getattr(tool, "description", "") or "")
             wrap_langchain_tool(
                 tool,
                 tool_type=tt,
@@ -169,5 +188,12 @@ def protect_langchain_agent(
                     wall.maybe_infer_goal(str(inferred))
                 return _original_invoke(input, **kwargs)
             executor.invoke = _patched_invoke
+
+    # Mark so future calls (auto or explicit) skip re-wrapping.
+    try:
+        executor._aw_auto_protected = True
+        executor._aw_wall = wall
+    except (AttributeError, TypeError):
+        pass
 
     return wall

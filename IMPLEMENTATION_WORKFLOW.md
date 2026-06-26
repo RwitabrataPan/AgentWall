@@ -1,7 +1,7 @@
 # AgentWall Implementation Workflow
 
 > Architecture review document. Describes only what is implemented in the current codebase.
-> Generated: 2026-06-24. Version: 0.1.0.
+> Generated: 2026-06-24. Updated: 2026-06-26. Version: 0.2.0.
 
 ---
 
@@ -9,7 +9,8 @@
 
 ```
 agentwall/
-├── __init__.py                          # Public API: protect_agent, protect_tool
+├── __init__.py                          # Public API + zero-config auto-instrumentation trigger
+├── auto.py                              # Zero-config: patches AgentExecutor, Crew, Runner
 ├── cli/
 │   └── main.py                          # CLI: version, doctor, config, inspect
 ├── core/
@@ -19,8 +20,6 @@ agentwall/
 │   └── types.py                        # DecisionType, ToolType, ToolAction,
 │                                        #   ResourceCategory, RuntimeEvent,
 │                                        #   Decision, EvalContext, ToolCall
-├── detectors/
-│   └── __init__.py                     # (empty)
 ├── inspector/
 │   ├── deps.py                         # FastAPI dependency injectors
 │   ├── desktop.py                      # PyWebView launcher
@@ -58,17 +57,57 @@ agentwall/
 │   ├── openai.py                       # OpenAIEvaluator
 │   └── registry.py                     # ProviderRegistry.load_chain()
 ├── security/
-│   ├── detectors.py                    # 3 detectors: Sensitive, Scope, Exfil
+│   ├── detectors.py                    # 4 detectors: Sensitive, Scope, Exfil, GoalDrift
 │   ├── engine.py                       # SecurityEngine (5-stage pipeline)
 │   ├── exceptions.py                   # AgentWallSecurityException
-│   ├── goal_tracker.py                 # GoalTracker (goal segments, transition heuristics)
+│   ├── goal_tracker.py                 # GoalTracker v2 (segments, transitions, confidence,
+│   │                                   #   runtime inference, drift detection)
 │   ├── policy_engine.py               # PolicyEngine (pattern matching)
 │   ├── result_analyzer.py              # ResultAnalyzer (post-execution classification)
 │   └── rules.py                        # compute_risk() per tool type
-└── storage/
-    ├── database.py                      # Database (SQLite, WAL, migrations)
-    └── models.py                        # SQLAlchemy ORM: Session, ToolEvent,
-                                         #   Evaluation, GoalSegment, Policy, ProviderSetting
+├── storage/
+│   ├── database.py                      # Database (SQLite, WAL, migrations)
+│   └── models.py                        # SQLAlchemy ORM: Session, ToolEvent,
+│                                        #   Evaluation, GoalSegment (+confidence),
+│                                        #   Policy, ProviderSetting
+└── utils/
+    ├── __init__.py
+    └── classifier.py                    # classify_tool(): ToolType from name/docstring
+```
+
+---
+
+## Section 0 — Zero-Configuration Workflow (v0.2.0)
+
+```
+import agentwall
+  └─ agentwall/__init__.py imports agentwall.auto
+       └─ auto.setup() called (unless AGENTWALL_AUTO=0)
+            ├─ _try_patch_langchain()
+            │     AgentExecutor.__init__ monkey-patched
+            │     On each new AgentExecutor:
+            │       protect_langchain_agent(self, db=_get_db(), engine=_get_engine())
+            │       weakref.finalize(self, wall.end_session)
+            │
+            ├─ _try_patch_crewai()
+            │     Crew.__init__ monkey-patched (same pattern)
+            │
+            └─ _try_patch_openai_agents()
+                  Runner.run classmethod patched
+                  On each Runner.run(agent, input):
+                    protect_openai_agent(agent, db=..., engine=...)
+                    goal inferred from input
+                    Runner.run(protected_agent, input) called
+                    wall.end_session() in finally
+```
+
+Tool type auto-classification via `classify_tool()`:
+```
+for each tool in agent/executor/crew tools:
+  if tool.name in tool_type_map:
+      tt = tool_type_map[tool.name]
+  else:
+      tt = classify_tool(tool.name, tool.description)
 ```
 
 ---
@@ -83,6 +122,7 @@ Framework calls protect_* function at startup
   - Session row inserted in SQLite (user_goal = "" or explicit)
   - ToolInterceptor created with reference to SecurityEngine
   - Tools wrapped (tool.func patched in-place OR new FunctionTool created)
+  - Tools auto-classified via classify_tool() when no tool_type_map provided
   - [OpenAI only, no explicit goal] InputGuardrail injected into agent.input_guardrails
 ↓
 Agent Framework runs
@@ -349,7 +389,7 @@ event = RuntimeEvent(
 
 ### Field origins
 
-**`tool_type`** — set by user via `tool_type_map={tool_name: ToolType.FILESYSTEM}`. Falls back to `ToolType.API` if tool name not in map.
+**`tool_type`** — set by user via `tool_type_map={tool_name: ToolType.FILESYSTEM}`. Falls back to `classify_tool(tool.name, tool.description)` when not in map. Falls back to `ToolType.GENERAL` if no keywords match.
 
 **`action`** — set by user via `action_map={tool_name: ToolAction.WRITE}`. Falls back via `_default_action(tool_type)`:
 ```
@@ -466,7 +506,7 @@ before_execute(event)
 
 ## Section 6 — Detectors
 
-All three detectors live in `agentwall/security/detectors.py`. All are instantiated by `_default_detectors()` and stored in `SecurityEngine._detectors`. Each detector's `detect(event, history)` returns a list of string labels (empty = clean). Each unique hit label contributes `10.0` to the risk score.
+All four detectors live in `agentwall/security/detectors.py`. All are instantiated by `_default_detectors()` and stored in `SecurityEngine._detectors`. Each detector's `detect(event, history)` returns a list of string labels (empty = clean). Each unique hit label contributes `10.0` to the risk score.
 
 ---
 
@@ -526,6 +566,33 @@ The dominant-type check iterates all events in history, counts per `ToolType`, f
 | `tool_type == TERMINAL` and `action == EXECUTE` and target contains exfil command (`curl `, `wget `, `scp `, `rsync `, `nc `, `ncat `) and known exfil domain | `terminal_exfil_to_known_domain` |
 
 For `external_email_send`, detection returns immediately without checking further conditions.
+
+---
+
+### GoalDriftDetector
+
+**Purpose:** Detect when tool actions are inconsistent with the stated or inferred goal.
+
+**Requires history:** No.
+
+**Hit conditions:**
+
+| Condition | Hit label |
+|-----------|-----------|
+| `resource_category == CREDENTIALS` AND goal matches `_CODE_GOAL_KEYWORDS` AND goal has no credential/auth/secret/key/token keywords | `goal_drift:credential_access_off_goal` |
+| target matches `_CRED_TARGETS` AND goal matches `_CODE_GOAL_KEYWORDS` AND `resource_category != CREDENTIALS` | `goal_drift:sensitive_target_off_goal` |
+| `tool_type == EMAIL` AND `action == SEND` AND goal has no `_EXFIL_GOAL_KEYWORDS` | `goal_drift:unexpected_email` |
+| `resource_category == SYSTEM` AND goal matches `_CODE_GOAL_KEYWORDS` AND goal has no system/config/setup/install/deploy keywords | `goal_drift:system_access_off_goal` |
+
+**Keyword sets (from source):**
+
+`_CODE_GOAL_KEYWORDS`: `{"fix", "bug", "implement", "feature", "code", "test", "write", "build", "create", "update", "refactor", "debug", "review", "read", "analyze", "check", "inspect", "find", "locate"}`
+
+`_EXFIL_GOAL_KEYWORDS`: `{"send", "email", "notify", "report", "upload", "export"}`
+
+`_CRED_TARGETS`: `{".env", "credential", "secret", "password", "token", ".pem", ".key", "id_rsa", ".aws/", "service_account"}`
+
+Returns empty list immediately when `event.goal` is empty.
 
 ---
 
@@ -599,7 +666,7 @@ Dispatches to a per-tool-type function via `_RULE_MAP`, then adds a `_category_b
 |-----------|-------------|
 | action == SEND | +35.0 |
 
-**Default** (unrecognized tool type): 10.0.
+**GENERAL** (auto-classified fallback): 10.0 base risk.
 
 ### Thresholds and routing (in SecurityEngine)
 
@@ -920,7 +987,7 @@ The UI is expected to re-fetch data on receiving `{"type": "refresh"}`. No event
 
 ### `agentwall version`
 
-Prints `agentwall {__version__}` (currently `0.1.0`).
+Prints `agentwall {__version__}` (currently `0.2.0`).
 
 ### `agentwall doctor`
 
@@ -1068,7 +1135,7 @@ wall.end_session()
 
 ```python
 from agentwall.core.types import (
-    ToolType,          # FILESYSTEM, TERMINAL, BROWSER, API, DATABASE, EMAIL
+    ToolType,          # FILESYSTEM, TERMINAL, BROWSER, API, DATABASE, EMAIL, GENERAL
     ToolAction,        # READ, WRITE, DELETE, EXECUTE, REQUEST, QUERY, SEND, LIST, CREATE
     ResourceCategory,  # CODE, CONFIG, CREDENTIALS, SYSTEM, NETWORK, USER_DATA, UNKNOWN
     DecisionType,      # ALLOW, WARN, BLOCK
@@ -1077,6 +1144,10 @@ from agentwall.core.types import (
     EvalContext,
     ToolCall,
 )
+
+from agentwall.utils.classifier import classify_tool
+# classify_tool(name, doc="") -> ToolType
+# Word-scoring: name words 3×, doc words 1×. Falls back to ToolType.GENERAL.
 ```
 
 ---
@@ -1099,7 +1170,10 @@ The default path `~/.agentwall/data.db` is a module-level constant. No environme
 In `wrap_langchain_tool` async wrapper, `after_execute(event, result)` is called after `await original_coro(...)`. The result passed to `ResultAnalyzer` is already the awaited value — correct behavior.
 
 **6. GoalTracker transition heuristic: short goals unreliable.**
-Two-signal heuristic (full token overlap + resource token overlap) handles verb-change continuity well but remains inaccurate for very short goals ("fix it", "done") that produce low token counts. No LLM disambiguation in v0.1.0.
+Two-signal heuristic (full token overlap + resource token overlap) handles verb-change continuity well but remains inaccurate for very short goals ("fix it", "done") that produce low token counts. No LLM disambiguation in v0.2.0.
+
+**7. Auto-instrumentation vs. explicit protect_* in tests.**
+`import agentwall` patches framework internals at import time. Test suites using explicit `protect_*` calls must set `AGENTWALL_AUTO=0` before importing agentwall to prevent auto-mode from wrapping tools first and triggering `_aw_wrapped` idempotency guards. `conftest.py` does this automatically for the AgentWall test suite.
 
 **Resolved in this pass (previously listed, now fixed):**
 - ~~WebSocket polling~~ → event-driven push via `EventBus` (`call_soon_threadsafe`)
@@ -1265,7 +1339,7 @@ Two-signal heuristic (full token overlap + resource token overlap) handles verb-
 │       │                                                             │
 │       ├─── goal_segments ──────────────────────────────────────── │
 │       │      id, session_id, goal_text, started_at, ended_at,      │
-│       │      transition_reason                                      │
+│       │      transition_reason, confidence                          │
 │       │                                                             │
 │       └─── tool_events ─────────────────────────────────────────── │
 │              id, session_id, tool_name, arguments, timestamp,       │

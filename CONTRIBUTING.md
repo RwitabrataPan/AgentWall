@@ -19,6 +19,20 @@ pytest tests/integration/               # integration tests only
 pytest tests/ -k "test_engine"          # filter by name
 ```
 
+**Current count: 301 tests, all passing.**
+
+The test suite disables zero-config auto-instrumentation via `conftest.py`:
+
+```python
+# tests/conftest.py (top of file, before any agentwall import)
+import os
+os.environ["AGENTWALL_AUTO"] = "0"
+```
+
+This prevents auto-mode from wrapping framework tools at import time and conflicting with explicit `protect_*` calls in integration tests. New tests must not remove or bypass this.
+
+If you are writing tests specifically for auto-mode behavior, use `monkeypatch.delenv("AGENTWALL_AUTO")` inside the test itself.
+
 ## Code Style
 
 - Python 3.12+

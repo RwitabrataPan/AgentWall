@@ -74,6 +74,12 @@ class Database:
                 except Exception:
                     pass
 
+            try:
+                conn.execute(text("ALTER TABLE goal_segments ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0"))
+                conn.commit()
+            except Exception:
+                pass
+
     def session(self) -> Session:
         return self._factory()
 

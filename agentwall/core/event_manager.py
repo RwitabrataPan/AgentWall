@@ -113,13 +113,14 @@ class EventManager:
                 db.expunge(r)
             return rows
 
-    def create_goal_segment(self, session_id: str, goal: str, reason: str = "initial") -> str:
+    def create_goal_segment(self, session_id: str, goal: str, reason: str = "initial", confidence: float = 1.0) -> str:
         with self._db.session() as db:
             seg = GoalSegment(
                 session_id=session_id,
                 goal_text=goal,
                 started_at=time.time(),
                 transition_reason=reason,
+                confidence=confidence,
             )
             db.add(seg)
             db.commit()

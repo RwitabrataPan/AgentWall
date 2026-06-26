@@ -40,6 +40,7 @@ def build_default_engine(db: "Database") -> "SecurityEngine":
 def _default_detectors() -> list:
     from agentwall.security.detectors import (
         DataExfiltrationDetector,
+        GoalDriftDetector,
         ScopeExpansionDetector,
         SensitiveResourceDetector,
     )
@@ -47,6 +48,7 @@ def _default_detectors() -> list:
         SensitiveResourceDetector(),
         ScopeExpansionDetector(),
         DataExfiltrationDetector(),
+        GoalDriftDetector(),
     ]
 
 

@@ -156,7 +156,12 @@ def protect_openai_agent(
     wrapped_tools = []
     for tool in agent.tools or []:
         if isinstance(tool, FunctionTool):
-            tt = tool_map.get(tool.name, ToolType.API)
+            if tool.name in tool_map:
+                tt = tool_map[tool.name]
+            else:
+                from agentwall.utils.classifier import classify_tool
+                _desc = getattr(tool, "description", "") or ""
+                tt = classify_tool(tool.name, _desc)
             wrapped_tools.append(
                 wrap_openai_function_tool(
                     tool,
@@ -181,5 +186,11 @@ def protect_openai_agent(
             protected_agent,
             input_guardrails=[*protected_agent.input_guardrails, inferrer],
         )
+
+    # Mark so auto-instrumentation (_aw_run) skips re-wrapping this agent.
+    try:
+        protected_agent._aw_is_protected = True
+    except (AttributeError, TypeError):
+        pass  # frozen dataclass
 
     return wall, protected_agent

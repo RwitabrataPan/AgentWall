@@ -152,6 +152,7 @@ def protect_tool(
 
     wrapper._aw_tool_type = tool_type
     wrapper._aw_session_id = session_id
+    wrapper._aw_wrapped = True
     return wrapper
 
 

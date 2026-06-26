@@ -67,7 +67,12 @@ def wrap_crewai_tool(
     CrewAI's concrete Tool.run() calls self.func() directly, bypassing _run.
     Patching func intercepts at the correct level while preserving the tool's
     name, description, and args_schema unchanged.
+    Idempotent: already-wrapped tools are skipped.
     """
+    # Skip if already wrapped
+    if getattr(tool.func, "_aw_wrapped", False):
+        return tool
+
     original_func = tool.func  # the raw Python callable
     resolved_action = action or _default_action(tool_type)
     _ref = goal_ref if goal_ref is not None else [goal or ""]
@@ -92,6 +97,7 @@ def wrap_crewai_tool(
         interceptor.after_execute(event, result)
         return result
 
+    _wrapped._aw_wrapped = True  # type: ignore[attr-defined]
     tool.func = _wrapped
     return tool
 
@@ -111,6 +117,14 @@ def protect_crewai_crew(
     Tools are modified in-place. Returns ProtectedAgent for session management.
     Kick off the crew normally after calling this.
     """
+    # Guard: already protected (auto or explicit) — return existing wall, no new session.
+    if getattr(crew, "_aw_auto_protected", False):
+        existing = getattr(crew, "_aw_wall", None)
+        if existing is not None:
+            if goal:
+                existing.set_goal(goal)
+            return existing
+
     from agentwall.interceptors.agent import ProtectedAgent
     from agentwall.security.engine import build_default_engine
 
@@ -129,7 +143,11 @@ def protect_crewai_crew(
     for agent in getattr(crew, "agents", []):
         for tool in getattr(agent, "tools", []) or []:
             if isinstance(tool, BaseTool):
-                tt = tool_map.get(tool.name, ToolType.API)
+                if tool.name in tool_map:
+                    tt = tool_map[tool.name]
+                else:
+                    from agentwall.utils.classifier import classify_tool
+                    tt = classify_tool(tool.name, getattr(tool, "description", "") or "")
                 wrap_crewai_tool(
                     tool,
                     tool_type=tt,
@@ -157,5 +175,12 @@ def protect_crewai_crew(
                     wall.maybe_infer_goal(inferred)
                 return _original_kickoff(inputs=inputs, **kwargs)
             crew.kickoff = _patched_kickoff
+
+    # Mark so future calls (auto or explicit) skip re-wrapping.
+    try:
+        crew._aw_auto_protected = True
+        crew._aw_wall = wall
+    except (AttributeError, TypeError):
+        pass
 
     return wall
