@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentwall-security"
-version = "0.2.4"
+version = "0.2.5"
 description = "AI Agent Runtime Security Platform — runtime security and behavioral monitoring for agentic AI systems"
 readme = "README.md"
 license = { file = "LICENSE" }
