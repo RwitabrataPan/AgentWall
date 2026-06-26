@@ -310,7 +310,7 @@ MIT License.
 
 ## Status
 
-**v0.2.1**
+**v0.2.3**
 
 Production-ready.
 
