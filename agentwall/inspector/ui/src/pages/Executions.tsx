@@ -282,16 +282,21 @@ function ExecutionCard({ execution, index, isLatest }: CardProps) {
 export function ExecutionsPage({ refreshTick }: Props) {
   const [executions, setExecutions] = useState<Execution[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.getExecutions().then(setExecutions).catch((e) => setErr(String(e)));
+    setLoading(true);
+    api.getExecutions()
+      .then((data) => { setExecutions(data); setErr(null); })
+      .catch((e) => setErr(String(e)))
+      .finally(() => setLoading(false));
   }, [refreshTick]);
 
   // Poll for cross-process updates (agents running in separate terminals)
   useEffect(() => {
     const id = setInterval(() => {
-      api.getExecutions().then(setExecutions).catch(() => {});
-    }, 5000);
+      api.getExecutions().then((data) => { setExecutions(data); setErr(null); }).catch(() => {});
+    }, 3000);
     return () => clearInterval(id);
   }, []);
 
@@ -310,7 +315,11 @@ export function ExecutionsPage({ refreshTick }: Props) {
 
       {err && <p className="px-6 py-3 text-red-400 text-sm">{err}</p>}
 
-      {executions.length === 0 && !err ? (
+      {loading && executions.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
+          Loading…
+        </div>
+      ) : executions.length === 0 && !err ? (
         <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
           No executions yet. Run an agent with AgentWall protection.
         </div>

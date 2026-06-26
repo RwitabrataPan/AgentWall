@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from .models import Base
 
@@ -17,9 +19,15 @@ def _set_wal_mode(dbapi_conn, _):
 
 class Database:
     def __init__(self, path: Path | str | None = None) -> None:
-        db_path = Path(path) if path else _DEFAULT_PATH
+        if path is None:
+            env_path = os.environ.get("AGENTWALL_TEST_DB")
+            db_path = Path(env_path) if env_path else _DEFAULT_PATH
+        else:
+            db_path = Path(path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.engine = create_engine(f"sqlite:///{db_path}", echo=False)
+        # NullPool: no connection reuse across sessions — each session gets a
+        # fresh connection so cross-process writes are always visible on next read.
+        self.engine = create_engine(f"sqlite:///{db_path}", echo=False, poolclass=NullPool)
         event.listen(self.engine, "connect", _set_wal_mode)
         Base.metadata.create_all(self.engine)
         self._migrate()

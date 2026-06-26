@@ -1,6 +1,6 @@
 # AgentWall Architecture
 
-This document describes the implemented architecture of AgentWall v0.2.5.
+This document describes the implemented architecture of AgentWall v0.2.6.
 
 ---
 
@@ -311,7 +311,7 @@ Thread-safe: `set_goal()` and `maybe_infer()` hold `threading.RLock`.
 
 ## Storage Architecture
 
-SQLite at `~/.agentwall/data.db`. WAL journal mode. Foreign keys enabled.
+SQLite at `~/.agentwall/data.db`. WAL journal mode. Foreign keys enabled. `NullPool` connection strategy (v0.2.6): no connection reuse across requests — each session opens a fresh OS-level file descriptor, guaranteeing that cross-process writes (agents in separate terminals) are always visible on the next read.
 
 ### Schema
 
@@ -394,7 +394,11 @@ The Timeline page displays goal segments including confidence scores and transit
 
 ### Real-time Updates
 
-`/ws/events` WebSocket: **event-driven push** via in-process `EventBus` (`agentwall/inspector/event_bus.py`).
+Two complementary mechanisms keep the UI current:
+
+**1. WebSocket push (in-process agents)**
+
+`/ws/events` WebSocket via in-process `EventBus` (`agentwall/inspector/event_bus.py`).
 
 ```
 tool call recorded (ToolInterceptor.before_execute)
@@ -407,7 +411,16 @@ after_execute (ResultAnalyzer result)
     → EventBus.publish()                   # second push for post-execution fields
 ```
 
-No SQLite polling. No external infrastructure. `EventBus` is a no-op when no WS clients are connected or when Inspector is not running (SDK-only mode). Idle connections receive `{"type": "ping"}` every 30s.
+`EventBus` is a no-op when no WS clients are connected or when Inspector is not running (SDK-only mode). Idle connections receive `{"type": "ping"}` every 30s. WebSocket reconnects automatically after a 3-second delay on drop.
+
+**2. Polling fallback (cross-process agents)**
+
+Agents running in a separate terminal cannot reach the Inspector's in-process `EventBus`. The frontend compensates with independent polling timers (v0.2.4+, confirmed compiled in dist v0.2.6):
+
+- `OverviewPage`: `setInterval(GET /api/overview, 5000)` — mounts once, runs for page lifetime
+- `ExecutionsPage`: `setInterval(GET /api/executions, 3000)` — mounts once, runs for page lifetime
+
+Both timers are independent of the WebSocket. Cross-process executions appear within 3–5 seconds without any manual refresh or Inspector restart.
 
 ---
 

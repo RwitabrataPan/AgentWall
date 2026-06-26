@@ -6,6 +6,58 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ---
 
+## [0.2.6] - 2026-06-27
+
+### Fixed
+
+- **Executions tab displayed "No executions yet" immediately on load**: `ExecutionsPage`
+  initialised state as `useState([])` with no loading guard. On mount the component
+  rendered `length === 0 && !err → "No executions yet"` before the first
+  `GET /api/executions` response arrived. Added a `loading` boolean (`useState(true)`),
+  set to `true` before every fetch and cleared in `.finally()`. The tab now shows
+  "Loading…" during the initial fetch and only shows the empty-state message once the
+  response confirms zero executions.
+
+- **Overview never updated for cross-process agents (stale compiled dist)**: `Overview.tsx`
+  source had a 5-second polling `useEffect` added after the last UI build. The compiled
+  dist (`index-BKd0VrI2.js`, built at 18:22) pre-dated the source edit and contained no
+  `setInterval` call in the Overview component — only the `refreshTick`-keyed `useEffect`.
+  Because cross-process agents never trigger the in-process `EventBus`, `refreshTick`
+  never incremented, so the Overview froze at initial load values permanently. Fix:
+  rebuilt the UI. New bundle `index-DCg6wM18.js` (content-hash change busts browser
+  cache automatically) contains both `useEffect`s in `OverviewPage`:
+  one keyed on `refreshTick`, one unconditional `setInterval(5000)`.
+
+- **Executions polling interval reduced from 5 s to 3 s**: Cross-process executions
+  now appear in the Executions tab within 3 seconds instead of 5.
+
+- **Executions tab polling cleared stale error on success**: Previously a failed poll
+  left the error banner visible even after a subsequent successful response. Added
+  `setErr(null)` on every successful fetch so errors self-clear on recovery.
+
+- **SQLite connection pool caused stale cross-process reads**: `Database` used
+  SQLAlchemy's default `QueuePool`. A reused connection with an open implicit `BEGIN`
+  transaction could return a read snapshot that pre-dated a write committed by a
+  separate agent process. Changed to `NullPool`: every request opens a fresh OS-level
+  connection with no prior transaction state, guaranteeing cross-process writes are
+  always visible on the next Inspector API call.
+
+- **`AGENTWALL_TEST_DB` environment variable ignored**: `Database()` with no `path`
+  argument always used `~/.agentwall/data.db`, silently ignoring `AGENTWALL_TEST_DB`.
+  The constructor now reads the env var when `path` is `None`, enabling proper test
+  isolation without path injection.
+
+### Validation
+
+- Headless Chromium browser verification via Playwright confirmed all three Inspector
+  issues fixed without Inspector restart: Overview `Total Executions` incremented from
+  9 → 10 → 11 across two `examples/demo.py` runs (7-second wait between screenshots);
+  Executions page showed new execution cards (#10, #11) auto-appearing via polling;
+  full execution detail (tool calls, security evaluation) rendered correctly on each
+  new card.
+
+---
+
 ## [0.2.5] - 2026-06-26
 
 ### Fixed

@@ -1,7 +1,7 @@
 # AgentWall Implementation Workflow
 
 > Architecture review document. Describes only what is implemented in the current codebase.
-> Generated: 2026-06-24. Updated: 2026-06-26. Version: 0.2.5.
+> Generated: 2026-06-24. Updated: 2026-06-27. Version: 0.2.6.
 
 ---
 
