@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 
@@ -63,7 +64,11 @@ def launch_desktop(host: str = "127.0.0.1", port: int = 8080) -> None:
     webview.create_window("AgentWall Inspector", url, width=1280, height=800, resizable=True)
     webview.start()
 
-    # Window closed — stop uvicorn so the process exits cleanly.
+    # Window closed — signal uvicorn to stop, then force-exit.
+    # t is daemon=True so it won't block normal exit, but PyWebView (EdgeWebView2
+    # on Windows) leaves non-daemon runtime threads alive after webview.start()
+    # returns, which prevents the interpreter from exiting on its own.
     if _server_ref:
         _server_ref[0].should_exit = True
     t.join(timeout=5)
+    os._exit(0)

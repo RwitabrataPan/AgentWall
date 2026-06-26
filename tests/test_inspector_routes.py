@@ -7,10 +7,12 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from unittest.mock import patch
 
 from agentwall.core.event_manager import EventManager
+from agentwall.core.execution_manager import ExecutionManager
 from agentwall.core.session_manager import SessionManager
-from agentwall.inspector.deps import get_db, get_event_manager, get_policy_engine, get_session_manager
+from agentwall.inspector.deps import get_db, get_event_manager, get_execution_manager, get_policy_engine, get_session_manager
 from agentwall.inspector.server import app
 from agentwall.security.policy_engine import PolicyEngine
 from agentwall.storage.database import Database
@@ -30,6 +32,7 @@ def _client(db: Database) -> TestClient:
     app.dependency_overrides[get_session_manager] = lambda: SessionManager(db)
     app.dependency_overrides[get_event_manager] = lambda: EventManager(db)
     app.dependency_overrides[get_policy_engine] = lambda: PolicyEngine(db)
+    app.dependency_overrides[get_execution_manager] = lambda: ExecutionManager(db)
     return TestClient(app)
 
 
@@ -369,6 +372,140 @@ def test_export_invalid_format():
     try:
         r = _client(db).get("/api/export?format=xml")
         assert r.status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# ── Executions ─────────────────────────────────────────────────────────────────
+
+def test_list_executions_empty():
+    db, tmpdir = _make_test_db()
+    try:
+        r = _client(db).get("/api/executions")
+        assert r.status_code == 200
+        assert r.json() == []
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_list_executions_returns_all_projects():
+    """Executions from different projects all appear — no CWD-based filter."""
+    db, tmpdir = _make_test_db()
+    try:
+        mgr = ExecutionManager(db)
+        root_a = Path(tmpdir) / "proj-a"
+        root_b = Path(tmpdir) / "proj-b"
+        root_a.mkdir()
+        root_b.mkdir()
+        proj_a = mgr.get_or_create_project(root_a)
+        proj_b = mgr.get_or_create_project(root_b)
+        mgr.create(proj_a.id, "task from agent project")
+        mgr.create(proj_b.id, "task from inspector project")
+        r = _client(db).get("/api/executions")
+        assert r.status_code == 200
+        assert len(r.json()) == 2
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_list_executions_newest_first():
+    db, tmpdir = _make_test_db()
+    try:
+        import time as _time
+        mgr = ExecutionManager(db)
+        root = Path(tmpdir) / "proj"
+        root.mkdir()
+        proj = mgr.get_or_create_project(root)
+        e1 = mgr.create(proj.id, "first task")
+        _time.sleep(0.01)
+        e2 = mgr.create(proj.id, "second task")
+        r = _client(db).get("/api/executions")
+        ids = [e["id"] for e in r.json()]
+        assert ids[0] == e2.id
+        assert ids[1] == e1.id
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_get_execution_by_id():
+    db, tmpdir = _make_test_db()
+    try:
+        mgr = ExecutionManager(db)
+        root = Path(tmpdir) / "proj"
+        root.mkdir()
+        proj = mgr.get_or_create_project(root)
+        ex = mgr.create(proj.id, "deploy model", framework="langchain")
+        r = _client(db).get(f"/api/executions/{ex.id}")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["id"] == ex.id
+        assert d["goal"] == "deploy model"
+        assert d["framework"] == "langchain"
+        assert d["status"] == "running"
+        assert d["event_count"] == 0
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_get_execution_not_found():
+    db, tmpdir = _make_test_db()
+    try:
+        r = _client(db).get("/api/executions/no-such-id")
+        assert r.status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_executions_visible_regardless_of_inspector_cwd():
+    """Regression: executions appear even when agent ran from a different directory."""
+    db, tmpdir = _make_test_db()
+    try:
+        mgr = ExecutionManager(db)
+        agent_root = Path(tmpdir) / "my-agent-project"
+        inspector_root = Path(tmpdir) / "different-directory"
+        agent_root.mkdir()
+        inspector_root.mkdir()
+        agent_proj = mgr.get_or_create_project(agent_root)
+        mgr.create(agent_proj.id, "agent ran from here")
+
+        # Simulate inspector launched from a different directory
+        with patch("agentwall.core.project.detect_project_root", return_value=inspector_root):
+            r = _client(db).get("/api/executions")
+
+        assert r.status_code == 200
+        assert len(r.json()) == 1
+        assert r.json()[0]["project_id"] == agent_proj.id
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_execution_sessions_endpoint():
+    db, tmpdir = _make_test_db()
+    try:
+        mgr = ExecutionManager(db)
+        root = Path(tmpdir) / "proj"
+        root.mkdir()
+        proj = mgr.get_or_create_project(root)
+        ex = mgr.create(proj.id, "task")
+        SessionManager(db).create("task", project_id=proj.id, execution_id=ex.id)
+        r = _client(db).get(f"/api/executions/{ex.id}/sessions")
+        assert r.status_code == 200
+        assert len(r.json()) == 1
+        assert r.json()[0]["execution_id"] == ex.id
     finally:
         app.dependency_overrides.clear()
         db.close()

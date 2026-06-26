@@ -18,7 +18,8 @@ def test_launch_desktop_creates_webview_window(monkeypatch):
         pass  # don't start uvicorn; server_ref stays empty
 
     with patch.object(desktop, "_wait_for_server", return_value=True), \
-         patch.object(desktop, "_run_server_thread", side_effect=_noop_server):
+         patch.object(desktop, "_run_server_thread", side_effect=_noop_server), \
+         patch("os._exit"):
         desktop.launch_desktop("127.0.0.1", 8080)
 
     mock_webview.create_window.assert_called_once_with(
@@ -63,10 +64,29 @@ def test_launch_desktop_signals_shutdown(monkeypatch):
         server_ref.append(fake_srv)
 
     with patch.object(desktop, "_wait_for_server", return_value=True), \
-         patch.object(desktop, "_run_server_thread", side_effect=_fake_server):
+         patch.object(desktop, "_run_server_thread", side_effect=_fake_server), \
+         patch("os._exit"):
         desktop.launch_desktop("127.0.0.1", 8080)
 
     assert fake_srv.should_exit is True
+
+
+def test_launch_desktop_exits_process_after_window_close(monkeypatch):
+    """launch_desktop calls os._exit(0) after the window closes and cleanup."""
+    mock_webview = MagicMock()
+    monkeypatch.setitem(sys.modules, "webview", mock_webview)
+
+    from agentwall.inspector import desktop
+
+    def _noop_server(host, port, server_ref):
+        pass
+
+    with patch.object(desktop, "_wait_for_server", return_value=True), \
+         patch.object(desktop, "_run_server_thread", side_effect=_noop_server), \
+         patch("os._exit") as mock_exit:
+        desktop.launch_desktop("127.0.0.1", 8080)
+
+    mock_exit.assert_called_once_with(0)
 
 
 def test_wait_for_server_returns_true_on_200(monkeypatch):

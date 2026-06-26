@@ -6,6 +6,34 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ---
 
+## [0.2.3] - 2026-06-26
+
+### Fixed
+
+- **Executions page always empty**: `/api/executions` was filtering by the Inspector's
+  working-directory project ID, which never matched executions created by agents running
+  from a different directory. The endpoint now returns all executions across all projects,
+  so the Executions page populates correctly regardless of where `agentwall inspect` is
+  launched from.
+
+- **Inspector process not exiting on window close**: Closing the PyWebView window set
+  `uvicorn.server.should_exit = True` and joined the server thread, but non-daemon threads
+  left by the WebView2 runtime (on Windows) blocked interpreter shutdown. Added `os._exit(0)`
+  after the graceful-stop sequence so the terminal returns immediately with no Ctrl+C required.
+
+### Tests
+
+- Added `ExecutionManager` dependency override to `_client()` in the inspector route test
+  fixture so execution-manager queries always hit the isolated test database.
+- Added 7 regression tests for the executions API: empty list, cross-project visibility,
+  newest-first ordering, single-execution fetch, 404 on missing ID, CWD-mismatch regression,
+  and session linkage.
+- Updated 2 existing desktop tests to mock `os._exit` so they survive the new shutdown path.
+- Added `test_launch_desktop_exits_process_after_window_close` to verify `os._exit(0)` is
+  called after the window closes.
+
+---
+
 ## [0.2.2] - 2026-06-26
 
 ### Fixed

@@ -98,6 +98,18 @@ class ExecutionManager:
                 db.expunge(r)
             return rows
 
+    def list_all(self, limit: int = 100) -> list[Execution]:
+        with self._db.session() as db:
+            rows = (
+                db.query(Execution)
+                .order_by(Execution.started_at.desc())
+                .limit(limit)
+                .all()
+            )
+            for r in rows:
+                db.expunge(r)
+            return rows
+
     def current_project_id(self) -> str:
         """Project ID for the current working directory."""
         root = detect_project_root()

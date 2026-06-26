@@ -57,8 +57,7 @@ def _summarise(execution: Execution, db_session) -> ExecutionSummarySchema:
 
 @router.get("", response_model=list[ExecutionSummarySchema])
 def list_executions(mgr: ExecutionManager = Depends(get_execution_manager), db=Depends(get_db)):
-    project = mgr.current_project()
-    executions = mgr.list_for_project(project.id)
+    executions = mgr.list_all()
     with db.session() as s:
         return [_summarise(ex, s) for ex in executions]
 
