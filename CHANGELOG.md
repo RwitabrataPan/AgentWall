@@ -6,6 +6,23 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ---
 
+## [0.2.2] - 2026-06-26
+
+### Fixed
+
+- **Project reuse bug**: `ExecutionManager.get_or_create_project()` now performs a true get-or-create.
+  Previously, unresolved path variants of the same directory produced different hash IDs, causing
+  every call to attempt a fresh INSERT and hit `UNIQUE constraint failed: projects.root`.
+  The fix normalises the path with `.resolve()` before hashing, and catches `IntegrityError` to
+  fall back to the existing row for concurrent callers — no `IntegrityError` is ever surfaced.
+
+### Tests
+
+- Added regression tests: path normalisation, no-duplicate-row invariant, concurrent get-or-create
+  (8 threads), and IntegrityError fallback simulation.
+
+---
+
 ## [0.2.1] - 2026-06-26
 
 ### Added

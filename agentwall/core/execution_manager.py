@@ -4,6 +4,8 @@ import time
 import uuid
 from pathlib import Path
 
+from sqlalchemy.exc import IntegrityError
+
 from agentwall.core.project import detect_project_root, project_id_for, project_name_for
 from agentwall.storage.database import Database
 from agentwall.storage.models import Execution, Project
@@ -16,19 +18,27 @@ class ExecutionManager:
     def get_or_create_project(self, root: Path | None = None) -> Project:
         if root is None:
             root = detect_project_root()
+        root = root.resolve()  # normalize: same path → same hash always
         pid = project_id_for(root)
         with self._db.session() as db:
             row = db.get(Project, pid)
-            if not row:
-                row = Project(
-                    id=pid,
-                    name=project_name_for(root),
-                    root=str(root),
-                    created_at=time.time(),
-                )
-                db.add(row)
+            if row:
+                db.expunge(row)
+                return row
+            row = Project(
+                id=pid,
+                name=project_name_for(root),
+                root=str(root),
+                created_at=time.time(),
+            )
+            db.add(row)
+            try:
                 db.commit()
                 db.refresh(row)
+            except IntegrityError:
+                # Race condition: another caller inserted between our get and insert
+                db.rollback()
+                row = db.query(Project).filter(Project.root == str(root)).first()
             db.expunge(row)
         return row
 

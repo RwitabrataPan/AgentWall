@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from agentwall.core.project import detect_project_root, project_id_for, project_name_for
 from agentwall.core.execution_manager import ExecutionManager
@@ -83,6 +85,110 @@ def test_get_or_create_project_idempotent(db, tmp_path):
     p1 = mgr.get_or_create_project(root)
     p2 = mgr.get_or_create_project(root)
     assert p1.id == p2.id
+
+
+def test_get_or_create_project_unresolved_path(db, tmp_path):
+    """Unresolved and resolved paths for same dir must return same project."""
+    mgr = ExecutionManager(db)
+    root = tmp_path / "proj-resolve"
+    root.mkdir()
+    p1 = mgr.get_or_create_project(root)           # unresolved
+    p2 = mgr.get_or_create_project(root.resolve())  # resolved
+    assert p1.id == p2.id
+    assert p1.root == str(root.resolve())
+
+
+def test_get_or_create_project_no_duplicate_rows(db, tmp_path):
+    """Multiple calls must not produce more than one Project row."""
+    from agentwall.storage.models import Project as ProjectModel
+    mgr = ExecutionManager(db)
+    root = tmp_path / "proj-nodup"
+    root.mkdir()
+    for _ in range(5):
+        mgr.get_or_create_project(root)
+    with db.session() as sess:
+        count = sess.query(ProjectModel).filter(ProjectModel.root == str(root.resolve())).count()
+    assert count == 1
+
+
+def test_get_or_create_project_concurrent(db, tmp_path):
+    """Concurrent calls must not raise and must produce exactly one project."""
+    from agentwall.storage.models import Project as ProjectModel
+    mgr = ExecutionManager(db)
+    root = tmp_path / "proj-concurrent"
+    root.mkdir()
+    errors = []
+
+    def worker():
+        try:
+            mgr.get_or_create_project(root)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"Concurrent get_or_create raised: {errors}"
+    with db.session() as sess:
+        count = sess.query(ProjectModel).filter(ProjectModel.root == str(root.resolve())).count()
+    assert count == 1
+
+
+def test_get_or_create_project_integrity_error_fallback(db, tmp_path):
+    """IntegrityError on INSERT must fall back to existing row, not raise."""
+    mgr = ExecutionManager(db)
+    root = tmp_path / "proj-race"
+    root.mkdir()
+    # Insert row first so the race simulation finds it on rollback
+    existing = mgr.get_or_create_project(root)
+
+    original_session = db.session
+
+    class _FakeCommit:
+        """Context manager that raises IntegrityError on first commit."""
+        def __init__(self):
+            self._sess = original_session().__enter__()
+            self._raised = False
+
+        def __enter__(self):
+            return self
+
+        def get(self, model, pk):
+            return None  # simulate "not found" to force INSERT path
+
+        def query(self, model):
+            return self._sess.query(model)
+
+        def add(self, obj):
+            self._sess.add(obj)
+
+        def commit(self):
+            if not self._raised:
+                self._raised = True
+                self._sess.rollback()
+                raise IntegrityError("UNIQUE constraint failed: projects.root", {}, None)
+            self._sess.commit()
+
+        def rollback(self):
+            self._sess.rollback()
+
+        def expunge(self, obj):
+            # obj may not be in session after rollback; ignore
+            try:
+                self._sess.expunge(obj)
+            except Exception:
+                pass
+
+        def __exit__(self, *args):
+            self._sess.__exit__(*args)
+
+    with patch.object(db, "session", return_value=_FakeCommit()):
+        recovered = mgr.get_or_create_project(root)
+
+    assert recovered.id == existing.id
 
 
 def test_create_execution(db, tmp_path):
