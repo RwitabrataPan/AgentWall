@@ -236,7 +236,7 @@ def test_list_for_project_filters_by_project(db, tmp_path):
 
 
 def test_latest_execution_project_returns_newest_execution_owner(db, tmp_path):
-    """Inspector polling context must follow the newest producer project."""
+    """The latest execution helper still returns the newest producer project."""
     import time as _time
 
     mgr = ExecutionManager(db)
@@ -272,8 +272,8 @@ def test_inspector_project_falls_back_to_current_project_without_executions(db, 
     assert project.root == str(root.resolve())
 
 
-def test_inspector_project_uses_latest_execution_over_cwd(db, tmp_path, monkeypatch):
-    """A cross-process agent project must not be hidden by Inspector CWD."""
+def test_inspector_project_uses_current_project_over_latest_execution(db, tmp_path, monkeypatch):
+    """Inspector context stays anchored to the launch project."""
     mgr = ExecutionManager(db)
     inspector_root = tmp_path / "inspector-project"
     agent_root = tmp_path / "agent-project"
@@ -288,10 +288,28 @@ def test_inspector_project_uses_latest_execution_over_cwd(db, tmp_path, monkeypa
         mock_run.return_value.stdout = ""
         project = mgr.inspector_project()
 
-    assert project.id == agent_project.id
+    assert project.id != agent_project.id
+    assert project.root == str(inspector_root.resolve())
 
 
 # ── ProtectedAgent project wiring ────────────────────────────────────────────
+
+def test_inspector_project_pinned_root_ignores_later_cwd_changes(db, tmp_path, monkeypatch):
+    """Pinned Inspector context must not follow os.chdir() after startup."""
+    inspector_root = tmp_path / "inspector-project"
+    other_root = tmp_path / "other-project"
+    inspector_root.mkdir()
+    other_root.mkdir()
+    mgr = ExecutionManager(db, inspector_root=inspector_root)
+
+    monkeypatch.chdir(other_root)
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 1
+        mock_run.return_value.stdout = ""
+        project = mgr.inspector_project()
+
+    assert project.root == str(inspector_root.resolve())
+
 
 def test_protected_agent_creates_execution(db, tmp_path, monkeypatch):
     from agentwall.interceptors.agent import ProtectedAgent

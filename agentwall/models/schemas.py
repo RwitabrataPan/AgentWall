@@ -132,3 +132,11 @@ class OverviewSchema(BaseModel):
     current_model: str | None = None
     top_detectors: list[dict] = []
     top_policies: list[dict] = []
+
+
+class InspectorRefreshSchema(BaseModel):
+    project: ProjectSchema
+    overview: OverviewSchema
+    executions: list[ExecutionSummarySchema]
+    providers: list[ProviderSettingSchema]
+    policies: list[PolicySchema]

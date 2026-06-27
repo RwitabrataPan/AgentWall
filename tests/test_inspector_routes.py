@@ -10,9 +10,10 @@ from fastapi.testclient import TestClient
 from unittest.mock import patch
 
 from agentwall.core.event_manager import EventManager
+from agentwall.core.config_manager import ConfigManager
 from agentwall.core.execution_manager import ExecutionManager
 from agentwall.core.session_manager import SessionManager
-from agentwall.inspector.deps import get_db, get_event_manager, get_execution_manager, get_policy_engine, get_session_manager
+from agentwall.inspector.deps import get_config_manager, get_db, get_event_manager, get_execution_manager, get_policy_engine, get_session_manager
 from agentwall.inspector.server import app
 from agentwall.security.policy_engine import PolicyEngine
 from agentwall.storage.database import Database
@@ -26,13 +27,14 @@ def _make_test_db():
     return db, tmpdir
 
 
-def _client(db: Database) -> TestClient:
+def _client(db: Database, inspector_root: Path | None = None) -> TestClient:
     """Return a TestClient with the given DB injected into all deps."""
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_session_manager] = lambda: SessionManager(db)
     app.dependency_overrides[get_event_manager] = lambda: EventManager(db)
+    app.dependency_overrides[get_config_manager] = lambda: ConfigManager(db)
     app.dependency_overrides[get_policy_engine] = lambda: PolicyEngine(db)
-    app.dependency_overrides[get_execution_manager] = lambda: ExecutionManager(db)
+    app.dependency_overrides[get_execution_manager] = lambda: ExecutionManager(db, inspector_root=inspector_root)
     return TestClient(app)
 
 
@@ -392,8 +394,8 @@ def test_list_executions_empty():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def test_list_executions_uses_latest_execution_project():
-    """GET /api/executions follows the newest producer project."""
+def test_list_executions_uses_inspector_launch_project():
+    """GET /api/executions stays scoped to the Inspector launch project."""
     db, tmpdir = _make_test_db()
     try:
         import time as _time
@@ -409,22 +411,22 @@ def test_list_executions_uses_latest_execution_project():
         _time.sleep(0.01)
         mgr.create(proj_b.id, "task from project b")
 
-        # Inspector launched from root_a, but root_b has the newest execution.
+        # Inspector launched from root_a, even though root_b has the newest execution.
         with patch("agentwall.core.execution_manager.detect_project_root", return_value=root_a):
             r = _client(db).get("/api/executions")
         assert r.status_code == 200
         data = r.json()
         assert len(data) == 1
-        assert data[0]["project_id"] == proj_b.id
-        assert data[0]["goal"] == "task from project b"
+        assert data[0]["project_id"] == proj_a.id
+        assert data[0]["goal"] == "task from project a"
     finally:
         app.dependency_overrides.clear()
         db.close()
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def test_list_executions_includes_cross_process_latest_project():
-    """Inspector CWD must not hide executions written by a separate agent project."""
+def test_list_executions_excludes_other_project_writes():
+    """Executions from another project must not replace Inspector context."""
     db, tmpdir = _make_test_db()
     try:
         mgr = ExecutionManager(db)
@@ -439,10 +441,7 @@ def test_list_executions_includes_cross_process_latest_project():
         with patch("agentwall.core.execution_manager.detect_project_root", return_value=inspector_root):
             r = _client(db).get("/api/executions")
         assert r.status_code == 200
-        data = r.json()
-        assert len(data) == 1
-        assert data[0]["project_id"] == agent_proj.id
-        assert data[0]["goal"] == "agent task"
+        assert r.json() == []
     finally:
         app.dependency_overrides.clear()
         db.close()
@@ -479,11 +478,9 @@ def test_executions_polling_reflects_new_cross_process_writes():
         import time as _time
 
         inspector_root = Path(tmpdir) / "inspector"
-        agent_root = Path(tmpdir) / "agent"
         inspector_root.mkdir()
-        agent_root.mkdir()
         writer_mgr = ExecutionManager(writer)
-        agent_project = writer_mgr.get_or_create_project(agent_root)
+        agent_project = writer_mgr.get_or_create_project(inspector_root)
 
         with patch("agentwall.core.execution_manager.detect_project_root", return_value=inspector_root):
             client = _client(db)
@@ -516,11 +513,9 @@ def test_overview_polling_reflects_new_cross_process_writes():
     writer = Database(path=Path(tmpdir) / "test.db")
     try:
         inspector_root = Path(tmpdir) / "inspector"
-        agent_root = Path(tmpdir) / "agent"
         inspector_root.mkdir()
-        agent_root.mkdir()
         writer_mgr = ExecutionManager(writer)
-        agent_project = writer_mgr.get_or_create_project(agent_root)
+        agent_project = writer_mgr.get_or_create_project(inspector_root)
 
         with patch("agentwall.core.execution_manager.detect_project_root", return_value=inspector_root):
             client = _client(db)
@@ -541,6 +536,100 @@ def test_overview_polling_reflects_new_cross_process_writes():
     finally:
         app.dependency_overrides.clear()
         writer.close()
+        db.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_refresh_endpoint_returns_current_project_snapshot():
+    """GET /api/refresh returns fresh project, overview, executions, providers, and policies."""
+    db, tmpdir = _make_test_db()
+    try:
+        mgr = ExecutionManager(db)
+        root = Path(tmpdir) / "refresh-project"
+        root.mkdir()
+        project = mgr.get_or_create_project(root)
+        ex = mgr.create(project.id, "refresh run")
+        mgr.finish(ex.id)
+        ConfigManager(db).set_provider("openai", "gpt-4o-mini", priority=1, enabled=True)
+        PolicyEngine(db).create("refresh-policy", {"rules": []})
+
+        with patch("agentwall.core.execution_manager.detect_project_root", return_value=root):
+            r = _client(db).get("/api/refresh")
+
+        assert r.status_code == 200
+        data = r.json()
+        assert data["project"]["id"] == project.id
+        assert data["overview"]["project_id"] == project.id
+        assert data["overview"]["project_name"] == "refresh-project"
+        assert [e["goal"] for e in data["executions"]] == ["refresh run"]
+        assert [p["provider"] for p in data["providers"]] == ["openai"]
+        assert [p["name"] for p in data["policies"]] == ["refresh-policy"]
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_inspector_routes_pinned_project_ignores_later_cwd_changes(monkeypatch):
+    """Pinned Inspector context must be stable for project, overview, executions, and refresh."""
+    db, tmpdir = _make_test_db()
+    try:
+        mgr = ExecutionManager(db)
+        root_a = Path(tmpdir) / "project-a"
+        root_b = Path(tmpdir) / "project-b"
+        root_a.mkdir()
+        root_b.mkdir()
+        project_a = mgr.get_or_create_project(root_a)
+        project_b = mgr.get_or_create_project(root_b)
+        mgr.create(project_a.id, "run from a")
+        mgr.create(project_b.id, "run from b")
+
+        client = _client(db, inspector_root=root_a)
+        monkeypatch.chdir(root_b)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stdout = ""
+            project = client.get("/api/project").json()
+            overview = client.get("/api/overview").json()
+            executions = client.get("/api/executions").json()
+            refresh = client.get("/api/refresh").json()
+
+        assert project["id"] == project_a.id
+        assert overview["project_id"] == project_a.id
+        assert [e["goal"] for e in executions] == ["run from a"]
+        assert refresh["project"]["id"] == project_a.id
+        assert refresh["overview"]["project_id"] == project_a.id
+        assert [e["goal"] for e in refresh["executions"]] == ["run from a"]
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_refresh_endpoint_switches_between_launch_projects():
+    """Repeated launches from different roots must show each root's own history."""
+    db, tmpdir = _make_test_db()
+    try:
+        mgr = ExecutionManager(db)
+        root_a = Path(tmpdir) / "project-a"
+        root_b = Path(tmpdir) / "project-b"
+        root_a.mkdir()
+        root_b.mkdir()
+        project_a = mgr.get_or_create_project(root_a)
+        project_b = mgr.get_or_create_project(root_b)
+        mgr.create(project_a.id, "run from a")
+        mgr.create(project_b.id, "run from b")
+        data_a = _client(db, inspector_root=root_a).get("/api/refresh").json()
+        data_b = _client(db, inspector_root=root_b).get("/api/refresh").json()
+
+        assert data_a["project"]["id"] == project_a.id
+        assert data_a["overview"]["project_name"] == "project-a"
+        assert [e["goal"] for e in data_a["executions"]] == ["run from a"]
+        assert data_b["project"]["id"] == project_b.id
+        assert data_b["overview"]["project_name"] == "project-b"
+        assert [e["goal"] for e in data_b["executions"]] == ["run from b"]
+    finally:
+        app.dependency_overrides.clear()
         db.close()
         shutil.rmtree(tmpdir, ignore_errors=True)
 

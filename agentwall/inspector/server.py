@@ -17,12 +17,15 @@ from .routes.overview import router as overview_router
 from .routes.policies import router as policies_router
 from .routes.projects import router as projects_router
 from .routes.providers import router as providers_router
+from .routes.refresh import router as refresh_router
 from .routes.sessions import router as sessions_router
 from .routes.ws import router as ws_router
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     from agentwall.inspector.event_bus import get_bus
+    from agentwall.inspector.deps import get_inspector_project_root
+    get_inspector_project_root()
     get_bus().set_loop(asyncio.get_event_loop())
     yield
 
@@ -48,6 +51,7 @@ for r in (
     goals_router,
     policies_router,
     providers_router,
+    refresh_router,
     export_router,
     ws_router,
 ):

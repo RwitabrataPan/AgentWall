@@ -12,8 +12,9 @@ from agentwall.storage.models import Execution, Project
 
 
 class ExecutionManager:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, inspector_root: Path | None = None) -> None:
         self._db = db
+        self._inspector_root = inspector_root.resolve() if inspector_root is not None else None
 
     def get_or_create_project(self, root: Path | None = None) -> Project:
         if root is None:
@@ -132,11 +133,14 @@ class ExecutionManager:
     def inspector_project(self) -> Project:
         """Project context for polling Inspector views.
 
-        The Inspector process and the agent process can have different working
-        directories. Polling views should follow the newest producer project
-        while still querying one project at a time.
+        Inspector views are anchored to the project where the Inspector process
+        was launched when an Inspector root is pinned. Agent-side managers that
+        do not receive a pinned root keep using current process project
+        detection for backward compatibility.
         """
-        return self.latest_execution_project() or self.current_project()
+        if self._inspector_root is not None:
+            return self.get_or_create_project(self._inspector_root)
+        return self.current_project()
 
     def current_project_id(self) -> str:
         """Project ID for the current working directory."""

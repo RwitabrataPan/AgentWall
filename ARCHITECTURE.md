@@ -1,6 +1,6 @@
 # AgentWall Architecture
 
-This document describes the implemented architecture of AgentWall v0.2.7.
+This document describes the implemented architecture of AgentWall v0.2.8.
 
 ---
 
@@ -313,7 +313,7 @@ Thread-safe: `set_goal()` and `maybe_infer()` hold `threading.RLock`.
 
 SQLite at `~/.agentwall/data.db`. WAL journal mode. Foreign keys enabled. `NullPool` connection strategy (v0.2.6): no connection reuse across requests — each session opens a fresh OS-level file descriptor, guaranteeing that cross-process writes (agents in separate terminals) are always visible on the next read.
 
-Project rows are deterministic from the resolved project root. `current_project()` remains the current process project (git root first, CWD fallback). Inspector polling routes use `ExecutionManager.inspector_project()` (v0.2.7): if any executions exist in the database, it selects the project that owns the newest execution across all projects; otherwise it falls back to `current_project()`. This keeps API responses project-scoped while preventing the Inspector process CWD from hiding executions committed by an agent process in another directory. Note: if executions exist for multiple projects, the Inspector follows the most recently active project globally — it is not anchored to the project it was launched from.
+Project rows are deterministic from the resolved project root. `current_project()` remains the current process project (git root first, CWD fallback). Inspector startup pins a resolved project root once via `get_inspector_project_root()`, and Inspector route dependencies inject that immutable root into `ExecutionManager`. `ExecutionManager.inspector_project()` then scopes API responses to the pinned project. This prevents stale executions from another project in the same SQLite database from replacing the project where `agentwall inspect` was launched, and it prevents later process working-directory changes from switching Inspector context.
 
 ### Schema
 
@@ -380,19 +380,26 @@ agentwall inspect
 
 FastAPI app in `agentwall/inspector/server.py`. `StaticFiles` mounted at `/` from `agentwall/inspector/ui/dist/` when present.
 
-Routers: sessions, events, goals, evaluations, policies, providers, config, health, WebSocket.
+Routers: sessions, events, goals, executions, policies, providers, project, refresh, export, health, WebSocket.
 
-`GET /api/overview` and `GET /api/executions` resolve the Inspector project context on every request, then open fresh SQLAlchemy sessions for their SELECTs. There is no response cache. The request trace is:
+`GET /api/overview` and `GET /api/executions` use the Inspector project context pinned during backend startup, then open fresh SQLAlchemy sessions for their SELECTs. There is no response cache. The request trace is:
 
 ```
+backend startup
+  → get_inspector_project_root()
+       → detect_project_root()
+       → cache resolved root for process lifetime
+
 poll request
   → get_execution_manager() / get_db()
+  → ExecutionManager(get_db(), inspector_root=get_inspector_project_root())
   → ExecutionManager.inspector_project()
-       → SELECT newest Execution joined to Project
-       → fallback to current_project() only when no executions exist
+       → get_or_create_project(pinned root)
   → project-scoped SELECTs for counts or execution summaries
   → JSON response
 ```
+
+`GET /api/refresh` uses the same pinned project context and returns a fresh snapshot of project, overview, executions, providers, and policies. The frontend Refresh button calls this endpoint and then triggers the same page reload path used by WebSocket refresh events.
 
 `GET /api/sessions/{session_id}/goals` — returns list of `GoalSegmentSchema` ordered by `started_at`. Includes `confidence` field on each segment.
 
@@ -434,7 +441,7 @@ Agents running in a separate terminal cannot reach the Inspector's in-process `E
 - `OverviewPage`: `setInterval(GET /api/overview, 5000)` — mounts once, runs for page lifetime
 - `ExecutionsPage`: `setInterval(GET /api/executions, 3000)` — mounts once, runs for page lifetime
 
-Both timers are independent of the WebSocket. Each poll reaches fresh backend SQL. In v0.2.7 the backend resolves to the project of the newest execution across the entire database, so cross-process executions appear within 3–5 seconds without any manual refresh or Inspector restart even when the Inspector and agent were launched from different directories.
+Both timers are independent of the WebSocket. Each poll reaches fresh backend SQL and is scoped to the project where the Inspector process was launched. Cross-process executions in that same project appear within 3–5 seconds without any manual refresh or Inspector restart. The Refresh button performs the same refresh immediately and also reloads project context, Providers, and Policies.
 
 ---
 

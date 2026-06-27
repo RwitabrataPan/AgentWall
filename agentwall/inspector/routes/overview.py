@@ -8,6 +8,7 @@ from agentwall.inspector.deps import get_db, get_execution_manager
 from agentwall.core.execution_manager import ExecutionManager
 from agentwall.models.schemas import OverviewSchema
 from agentwall.storage.models import Evaluation, Execution, Session, ToolEvent
+from agentwall.storage.models import Project
 
 router = APIRouter(prefix="/api", tags=["overview"])
 
@@ -15,6 +16,10 @@ router = APIRouter(prefix="/api", tags=["overview"])
 @router.get("/overview", response_model=OverviewSchema)
 def overview(mgr: ExecutionManager = Depends(get_execution_manager), db=Depends(get_db)):
     project = mgr.inspector_project()
+    return build_overview(project, db)
+
+
+def build_overview(project: Project, db) -> OverviewSchema:
     project_id = project.id
 
     with db.session() as s:

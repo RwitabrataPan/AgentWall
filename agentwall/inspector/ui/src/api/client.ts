@@ -121,6 +121,14 @@ export interface ProviderTestResult {
   error: string | null;
 }
 
+export interface InspectorRefresh {
+  project: Project;
+  overview: Overview;
+  executions: Execution[];
+  providers: Provider[];
+  policies: Policy[];
+}
+
 async function request<T>(
   path: string,
   opts?: RequestInit,
@@ -147,6 +155,7 @@ export const api = {
 
   // Project
   getProject: () => request<Project>("/project"),
+  refresh: () => request<InspectorRefresh>("/refresh"),
 
   // Overview
   getOverview: () => request<Overview>("/overview"),

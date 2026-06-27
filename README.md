@@ -199,10 +199,13 @@ Pages:
 * **Policies** — policy management
 
 The Inspector backend polls the same local SQLite database used by protected
-agents. Overview and Executions resolve to the project owning the newest
-execution across the entire database, so agents running in a separate terminal
-or working directory appear on the next poll without restarting the Inspector.
-If no executions exist, the Inspector scopes to its own working directory's project.
+agents. Overview and Executions are scoped to the project where `agentwall inspect`
+was launched. The backend pins that project context during startup, so later
+working-directory changes inside the Inspector process cannot switch projects.
+Every poll opens a fresh SQLite connection so executions from separate terminals
+in that same project appear without restarting the Inspector.
+The top bar includes a Refresh button that immediately reloads project context,
+Overview, Executions, Providers, and Policies.
 
 ### Provider Agnostic
 
@@ -312,7 +315,7 @@ MIT License.
 
 ## Status
 
-**v0.2.7**
+**v0.2.8**
 
 Production-ready.
 

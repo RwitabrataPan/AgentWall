@@ -13,6 +13,7 @@ export default function App() {
   const [projectName, setProjectName] = useState<string | undefined>();
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     api.health().then((h) => setVersion(h.version)).catch(() => {});
@@ -28,9 +29,29 @@ export default function App() {
 
   const goBack = () => setPage("executions");
 
+  const refreshInspector = async () => {
+    setRefreshing(true);
+    try {
+      const snapshot = await api.refresh();
+      setProjectName(snapshot.project.name);
+      setRefreshTick((t) => t + 1);
+    } catch {
+      setRefreshTick((t) => t + 1);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   return (
     <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
-      <NavBar page={page} onNav={setPage} version={version} projectName={projectName} />
+      <NavBar
+        page={page}
+        onNav={setPage}
+        version={version}
+        projectName={projectName}
+        onRefresh={refreshInspector}
+        refreshing={refreshing}
+      />
       <div className="flex-1 overflow-hidden">
         {page === "overview" && (
           <div className="h-full overflow-y-auto">
@@ -45,12 +66,12 @@ export default function App() {
         )}
         {page === "providers" && (
           <div className="h-full overflow-hidden flex flex-col">
-            <ProvidersPage />
+            <ProvidersPage refreshTick={refreshTick} />
           </div>
         )}
         {page === "policies" && (
           <div className="h-full overflow-hidden flex flex-col">
-            <PoliciesPage />
+            <PoliciesPage refreshTick={refreshTick} />
           </div>
         )}
       </div>

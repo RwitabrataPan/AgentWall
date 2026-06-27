@@ -162,7 +162,11 @@ function TestPanel({
   );
 }
 
-export function PoliciesPage() {
+interface Props {
+  refreshTick: number;
+}
+
+export function PoliciesPage({ refreshTick }: Props) {
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [templates, setTemplates] = useState<PolicyTemplate[]>([]);
   const [modal, setModal] = useState<null | "create" | Policy>(null);
@@ -171,11 +175,11 @@ export function PoliciesPage() {
   const [err, setErr] = useState<string | null>(null);
   const [testConfig, setTestConfig] = useState<Record<string, unknown> | null>(null);
 
-  const load = () => api.getPolicies().then(setPolicies).catch((e) => setErr(String(e)));
+  const load = () => api.getPolicies().then((data) => { setPolicies(data); setErr(null); }).catch((e) => setErr(String(e)));
   useEffect(() => {
     load();
     api.getPolicyTemplates().then(setTemplates).catch(() => {});
-  }, []);
+  }, [refreshTick]);
 
   const openCreate = () => {
     setBuilder(defaultBuilder());

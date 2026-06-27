@@ -6,6 +6,46 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ---
 
+## [0.2.8] - 2026-06-27
+
+### Fixed
+
+- **Inspector project context could remain on an older project**: v0.2.7 made
+  polling follow the project with the newest execution across the entire
+  database. That kept cross-process writes visible, but it also let an older or
+  unrelated project override the directory where `agentwall inspect` was
+  launched. Inspector Overview and Executions now resolve
+  `ExecutionManager.inspector_project()` to the Inspector startup project, then
+  query that project only.
+
+- **Inspector project context depended on mutable process CWD**:
+  `ExecutionManager.inspector_project()` no longer recomputes from `Path.cwd()`
+  on every API request for Inspector routes. The FastAPI backend pins the
+  resolved project root during startup and injects that immutable root into
+  Inspector `ExecutionManager` instances. Later `os.chdir()` calls inside the
+  Inspector process cannot switch Overview, Executions, Project, or Refresh to
+  another project.
+
+- **Manual refresh was missing**: added `GET /api/refresh`, which returns a
+  fresh Inspector snapshot containing project context, Overview, Executions,
+  Providers, and Policies. The Inspector top bar now has a Refresh button that
+  calls this endpoint, updates the project label, and triggers the existing page
+  reload flow immediately.
+
+### Tests
+
+- Added regression coverage for manual refresh snapshots, project switching
+  across repeated launches, launch-project execution scoping, same-project
+  cross-process polling freshness, pinned startup project context, and
+  `os.chdir()` after startup.
+
+### Validation
+
+- Rebuilt the bundled Inspector UI and verified the focused backend regression
+  suite with workspace-local pytest temp storage.
+
+---
+
 ## [0.2.7] - 2026-06-27
 
 ### Fixed

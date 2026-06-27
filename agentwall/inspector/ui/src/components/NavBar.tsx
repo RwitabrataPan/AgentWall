@@ -12,9 +12,11 @@ interface Props {
   onNav: (p: Page) => void;
   version: string;
   projectName?: string;
+  onRefresh: () => void;
+  refreshing?: boolean;
 }
 
-export function NavBar({ page, onNav, version, projectName }: Props) {
+export function NavBar({ page, onNav, version, projectName, onRefresh, refreshing = false }: Props) {
   return (
     <nav className="bg-gray-900 border-b border-gray-800 px-4 flex items-center gap-1 h-12 shrink-0">
       <span className="font-bold text-white mr-4 tracking-tight select-none">
@@ -39,7 +41,15 @@ export function NavBar({ page, onNav, version, projectName }: Props) {
           <span className="text-gray-400">{projectName}</span>
         </span>
       )}
-      <span className="ml-auto text-xs text-gray-600 select-none">v{version}</span>
+      <button
+        onClick={onRefresh}
+        disabled={refreshing}
+        className="ml-auto px-3 py-1 text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-60 disabled:hover:bg-gray-800 text-gray-300 rounded border border-gray-700 transition-colors"
+        title="Refresh Inspector data"
+      >
+        {refreshing ? "Refreshing" : "Refresh"}
+      </button>
+      <span className="text-xs text-gray-600 select-none">v{version}</span>
     </nav>
   );
 }

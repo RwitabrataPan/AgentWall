@@ -13,7 +13,11 @@ const MODELS: Record<string, string[]> = {
 
 const NO_KEY = new Set(["ollama"]);
 
-export function ProvidersPage() {
+interface Props {
+  refreshTick: number;
+}
+
+export function ProvidersPage({ refreshTick }: Props) {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [testing, setTesting] = useState<Record<string, ProviderTestResult | "loading">>({});
   const [editRow, setEditRow] = useState<string | null>(null);
@@ -27,8 +31,8 @@ export function ProvidersPage() {
   const [addForm, setAddForm] = useState({ provider: "openai", model: "gpt-4o-mini", priority: 1, enabled: true, api_key: "" });
   const [err, setErr] = useState<string | null>(null);
 
-  const load = () => api.getProviders().then(setProviders).catch((e) => setErr(String(e)));
-  useEffect(() => { load(); }, []);
+  const load = () => api.getProviders().then((data) => { setProviders(data); setErr(null); }).catch((e) => setErr(String(e)));
+  useEffect(() => { load(); }, [refreshTick]);
 
   const startEdit = (p: Provider) => {
     setEditRow(p.provider);

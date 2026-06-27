@@ -11,5 +11,5 @@ router = APIRouter(prefix="/api/project", tags=["project"])
 
 @router.get("", response_model=ProjectSchema)
 def current_project(mgr: ExecutionManager = Depends(get_execution_manager)):
-    project = mgr.current_project()
+    project = mgr.inspector_project()
     return project

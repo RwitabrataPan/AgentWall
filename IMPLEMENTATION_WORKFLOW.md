@@ -1,7 +1,7 @@
 # AgentWall Implementation Workflow
 
 > Architecture review document. Describes only what is implemented in the current codebase.
-> Generated: 2026-06-24. Updated: 2026-06-27. Version: 0.2.7.
+> Generated: 2026-06-24. Updated: 2026-06-27. Version: 0.2.8.
 
 ---
 
@@ -35,6 +35,7 @@ agentwall/
 │       ├── overview.py                 # GET /api/overview
 │       ├── policies.py                 # CRUD /api/policies + PATCH /{name}/priority
 │       ├── providers.py                # CRUD /api/providers
+│       ├── refresh.py                  # GET /api/refresh snapshot
 │       ├── sessions.py                 # CRUD /api/sessions
 │       └── ws.py                       # WS /ws/events (event-driven push)
 ├── integrations/
@@ -989,7 +990,7 @@ The UI is expected to re-fetch data on receiving `{"type": "refresh"}`. No event
 
 ### `agentwall version`
 
-Prints `agentwall {__version__}` (currently `0.2.7`).
+Prints `agentwall {__version__}` (currently `0.2.8`).
 
 ### `agentwall doctor`
 
@@ -1368,8 +1369,10 @@ Two-signal heuristic (full token overlap + resource token overlap) handles verb-
 │                                                                     │
 │  FastAPI routes:                                                    │
 │    GET  /api/health                                                 │
-│    GET  /api/overview        ← fresh SQL, newest-execution project  │
-│    GET  /api/executions      ← fresh SQL, newest-execution project  │
+│    GET  /api/project                                                │
+│    GET  /api/overview        ← fresh SQL, launch project            │
+│    GET  /api/executions      ← fresh SQL, launch project            │
+│    GET  /api/refresh         ← project + page snapshot              │
 │    GET  /api/sessions                                               │
 │    GET  /api/sessions/{id}                                          │
 │    POST /api/sessions/{id}/end                                      │
@@ -1383,7 +1386,7 @@ Two-signal heuristic (full token overlap + resource token overlap) handles verb-
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Inspector Backend Synchronization (v0.2.7)
+### Inspector Backend Synchronization (v0.2.8)
 
 The frontend polling loop is only a trigger. Freshness is guaranteed by the
 backend request path:
@@ -1392,9 +1395,10 @@ backend request path:
 GET /api/overview or GET /api/executions
   → FastAPI dependency creates ExecutionManager(get_db())
   → get_db() returns the process Database singleton
+  → get_inspector_project_root() returns the startup-pinned root
+  → ExecutionManager(get_db(), inspector_root=pinned_root)
   → ExecutionManager.inspector_project()
-       → SELECT Project JOIN Execution ORDER BY Execution.started_at DESC LIMIT 1
-       → if no executions exist, fallback to current_project()
+       → get_or_create_project(pinned root)
   → open a new SQLAlchemy Session from Database.session()
   → run project-scoped SELECTs for counts or execution summaries
   → return JSON
@@ -1402,10 +1406,27 @@ GET /api/overview or GET /api/executions
 
 `Database` uses `NullPool`, so each request gets a new SQLite connection and no
 long-lived ORM identity map. A committed execution from a separate agent process
-is visible to the next poll as long as both processes use the same SQLite file.
-The v0.2.7 root cause was not frontend polling or SQLAlchemy stale state; it was
-that the Inspector process project and the agent process project could differ,
-causing the backend to return fresh JSON for the wrong project repeatedly.
+is visible to the next poll as long as both processes use the same SQLite file
+and project root. The v0.2.8 project context is pinned during FastAPI startup by
+`get_inspector_project_root()`, so later `os.chdir()` calls inside the Inspector
+process do not change Overview, Executions, Project, or Refresh responses.
+
+`GET /api/refresh` returns a single fresh snapshot:
+
+```
+{
+  project,
+  overview,
+  executions,
+  providers,
+  policies
+}
+```
+
+The Inspector Refresh button calls this endpoint, updates the displayed project
+name, and increments the same refresh tick used by WebSocket refresh events.
+Overview, Executions, Providers, and Policies then re-fetch their normal API
+routes immediately.
 
 ---
 
