@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api", tags=["overview"])
 
 @router.get("/overview", response_model=OverviewSchema)
 def overview(mgr: ExecutionManager = Depends(get_execution_manager), db=Depends(get_db)):
-    project = mgr.current_project()
+    project = mgr.inspector_project()
     project_id = project.id
 
     with db.session() as s:

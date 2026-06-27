@@ -116,6 +116,28 @@ class ExecutionManager:
                 db.expunge(r)
             return rows
 
+    def latest_execution_project(self) -> Project | None:
+        """Return the project that owns the newest execution, if any."""
+        with self._db.session() as db:
+            row = (
+                db.query(Project)
+                .join(Execution, Execution.project_id == Project.id)
+                .order_by(Execution.started_at.desc())
+                .first()
+            )
+            if row:
+                db.expunge(row)
+            return row
+
+    def inspector_project(self) -> Project:
+        """Project context for polling Inspector views.
+
+        The Inspector process and the agent process can have different working
+        directories. Polling views should follow the newest producer project
+        while still querying one project at a time.
+        """
+        return self.latest_execution_project() or self.current_project()
+
     def current_project_id(self) -> str:
         """Project ID for the current working directory."""
         root = detect_project_root()

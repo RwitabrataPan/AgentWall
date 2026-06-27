@@ -392,10 +392,12 @@ def test_list_executions_empty():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def test_list_executions_filters_by_current_project():
-    """GET /api/executions returns only the current project's executions."""
+def test_list_executions_uses_latest_execution_project():
+    """GET /api/executions follows the newest producer project."""
     db, tmpdir = _make_test_db()
     try:
+        import time as _time
+
         mgr = ExecutionManager(db)
         root_a = Path(tmpdir) / "proj-a"
         root_b = Path(tmpdir) / "proj-b"
@@ -404,24 +406,25 @@ def test_list_executions_filters_by_current_project():
         proj_a = mgr.get_or_create_project(root_a)
         proj_b = mgr.get_or_create_project(root_b)
         mgr.create(proj_a.id, "task from project a")
+        _time.sleep(0.01)
         mgr.create(proj_b.id, "task from project b")
 
-        # Inspector launched from root_a — only proj_a executions appear
+        # Inspector launched from root_a, but root_b has the newest execution.
         with patch("agentwall.core.execution_manager.detect_project_root", return_value=root_a):
             r = _client(db).get("/api/executions")
         assert r.status_code == 200
         data = r.json()
         assert len(data) == 1
-        assert data[0]["project_id"] == proj_a.id
-        assert data[0]["goal"] == "task from project a"
+        assert data[0]["project_id"] == proj_b.id
+        assert data[0]["goal"] == "task from project b"
     finally:
         app.dependency_overrides.clear()
         db.close()
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def test_list_executions_excludes_other_projects():
-    """Executions from projects other than the current one do not appear."""
+def test_list_executions_includes_cross_process_latest_project():
+    """Inspector CWD must not hide executions written by a separate agent project."""
     db, tmpdir = _make_test_db()
     try:
         mgr = ExecutionManager(db)
@@ -432,11 +435,14 @@ def test_list_executions_excludes_other_projects():
         agent_proj = mgr.get_or_create_project(agent_root)
         mgr.create(agent_proj.id, "agent task")
 
-        # Inspector launched from inspector_root — agent's execution must NOT appear
+        # Inspector launched from inspector_root, agent wrote from agent_root.
         with patch("agentwall.core.execution_manager.detect_project_root", return_value=inspector_root):
             r = _client(db).get("/api/executions")
         assert r.status_code == 200
-        assert r.json() == []
+        data = r.json()
+        assert len(data) == 1
+        assert data[0]["project_id"] == agent_proj.id
+        assert data[0]["goal"] == "agent task"
     finally:
         app.dependency_overrides.clear()
         db.close()
@@ -461,6 +467,80 @@ def test_list_executions_newest_first():
         assert ids[1] == e1.id
     finally:
         app.dependency_overrides.clear()
+        db.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_executions_polling_reflects_new_cross_process_writes():
+    """Repeated GET /api/executions calls must execute fresh SQL and show new rows."""
+    db, tmpdir = _make_test_db()
+    writer = Database(path=Path(tmpdir) / "test.db")
+    try:
+        import time as _time
+
+        inspector_root = Path(tmpdir) / "inspector"
+        agent_root = Path(tmpdir) / "agent"
+        inspector_root.mkdir()
+        agent_root.mkdir()
+        writer_mgr = ExecutionManager(writer)
+        agent_project = writer_mgr.get_or_create_project(agent_root)
+
+        with patch("agentwall.core.execution_manager.detect_project_root", return_value=inspector_root):
+            client = _client(db)
+            first = client.get("/api/executions")
+            assert first.status_code == 200
+            assert first.json() == []
+
+            first_ex = writer_mgr.create(agent_project.id, "run 1")
+            writer_mgr.finish(first_ex.id)
+            second = client.get("/api/executions")
+            assert [e["goal"] for e in second.json()] == ["run 1"]
+            assert second.json()[0]["status"] == "completed"
+
+            _time.sleep(0.01)
+            second_ex = writer_mgr.create(agent_project.id, "run 2")
+            writer_mgr.finish(second_ex.id)
+            third = client.get("/api/executions")
+            assert [e["goal"] for e in third.json()] == ["run 2", "run 1"]
+            assert all(e["status"] == "completed" for e in third.json())
+    finally:
+        app.dependency_overrides.clear()
+        writer.close()
+        db.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_overview_polling_reflects_new_cross_process_writes():
+    """GET /api/overview must count executions committed by another DB handle."""
+    db, tmpdir = _make_test_db()
+    writer = Database(path=Path(tmpdir) / "test.db")
+    try:
+        inspector_root = Path(tmpdir) / "inspector"
+        agent_root = Path(tmpdir) / "agent"
+        inspector_root.mkdir()
+        agent_root.mkdir()
+        writer_mgr = ExecutionManager(writer)
+        agent_project = writer_mgr.get_or_create_project(agent_root)
+
+        with patch("agentwall.core.execution_manager.detect_project_root", return_value=inspector_root):
+            client = _client(db)
+            before = client.get("/api/overview").json()
+            assert before["total_executions"] == 0
+
+            ex = writer_mgr.create(agent_project.id, "run 1")
+            during = client.get("/api/overview").json()
+            assert during["project_id"] == agent_project.id
+            assert during["total_executions"] == 1
+            assert during["active_executions"] == 1
+
+            writer_mgr.finish(ex.id)
+            after = client.get("/api/overview").json()
+            assert after["project_id"] == agent_project.id
+            assert after["total_executions"] == 1
+            assert after["active_executions"] == 0
+    finally:
+        app.dependency_overrides.clear()
+        writer.close()
         db.close()
         shutil.rmtree(tmpdir, ignore_errors=True)
 

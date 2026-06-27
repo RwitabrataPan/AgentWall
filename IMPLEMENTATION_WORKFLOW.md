@@ -1,7 +1,7 @@
 # AgentWall Implementation Workflow
 
 > Architecture review document. Describes only what is implemented in the current codebase.
-> Generated: 2026-06-24. Updated: 2026-06-27. Version: 0.2.6.
+> Generated: 2026-06-24. Updated: 2026-06-27. Version: 0.2.7.
 
 ---
 
@@ -16,6 +16,8 @@ agentwall/
 ├── core/
 │   ├── config_manager.py               # Provider + threshold CRUD (DB-backed)
 │   ├── event_manager.py                # ToolEvent + Evaluation CRUD
+│   ├── execution_manager.py            # Project + execution CRUD and Inspector project context
+│   ├── project.py                      # Git-root/CWD project detection and project IDs
 │   ├── session_manager.py              # Session CRUD
 │   └── types.py                        # DecisionType, ToolType, ToolAction,
 │                                        #   ResourceCategory, RuntimeEvent,
@@ -987,7 +989,7 @@ The UI is expected to re-fetch data on receiving `{"type": "refresh"}`. No event
 
 ### `agentwall version`
 
-Prints `agentwall {__version__}` (currently `0.2.0`).
+Prints `agentwall {__version__}` (currently `0.2.7`).
 
 ### `agentwall doctor`
 
@@ -1366,7 +1368,8 @@ Two-signal heuristic (full token overlap + resource token overlap) handles verb-
 │                                                                     │
 │  FastAPI routes:                                                    │
 │    GET  /api/health                                                 │
-│    GET  /api/overview                                               │
+│    GET  /api/overview        ← fresh SQL, newest-execution project  │
+│    GET  /api/executions      ← fresh SQL, newest-execution project  │
 │    GET  /api/sessions                                               │
 │    GET  /api/sessions/{id}                                          │
 │    POST /api/sessions/{id}/end                                      │
@@ -1379,6 +1382,30 @@ Two-signal heuristic (full token overlap + resource token overlap) handles verb-
 │    GET  /           (StaticFiles from ui/dist/ if built)            │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+### Inspector Backend Synchronization (v0.2.7)
+
+The frontend polling loop is only a trigger. Freshness is guaranteed by the
+backend request path:
+
+```
+GET /api/overview or GET /api/executions
+  → FastAPI dependency creates ExecutionManager(get_db())
+  → get_db() returns the process Database singleton
+  → ExecutionManager.inspector_project()
+       → SELECT Project JOIN Execution ORDER BY Execution.started_at DESC LIMIT 1
+       → if no executions exist, fallback to current_project()
+  → open a new SQLAlchemy Session from Database.session()
+  → run project-scoped SELECTs for counts or execution summaries
+  → return JSON
+```
+
+`Database` uses `NullPool`, so each request gets a new SQLite connection and no
+long-lived ORM identity map. A committed execution from a separate agent process
+is visible to the next poll as long as both processes use the same SQLite file.
+The v0.2.7 root cause was not frontend polling or SQLAlchemy stale state; it was
+that the Inspector process project and the agent process project could differ,
+causing the backend to return fresh JSON for the wrong project repeatedly.
 
 ---
 

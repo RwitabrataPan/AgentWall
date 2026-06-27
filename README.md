@@ -191,16 +191,18 @@ Native desktop security console. Launch with:
 agentwall inspect
 ```
 
-Features:
+Pages:
 
-* Session Timeline
-* Goal Timeline (goal segments with confidence and transition reasons)
-* Security Decisions
-* Risk Scores
-* Detector Results
-* Policy Management
-* Provider Configuration
-* Export (JSON/CSV)
+* **Overview** — live stats: active executions, tool calls, risk distribution, top detectors
+* **Executions** — per-execution history with tool calls, security evaluations, and goal timeline drill-down
+* **Providers** — LLM evaluator configuration
+* **Policies** — policy management
+
+The Inspector backend polls the same local SQLite database used by protected
+agents. Overview and Executions resolve to the project owning the newest
+execution across the entire database, so agents running in a separate terminal
+or working directory appear on the next poll without restarting the Inspector.
+If no executions exist, the Inspector scopes to its own working directory's project.
 
 ### Provider Agnostic
 
@@ -310,7 +312,7 @@ MIT License.
 
 ## Status
 
-**v0.2.6**
+**v0.2.7**
 
 Production-ready.
 

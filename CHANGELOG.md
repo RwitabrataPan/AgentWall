@@ -6,6 +6,44 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ---
 
+## [0.2.7] - 2026-06-27
+
+### Fixed
+
+- **Inspector polling returned stale project-scoped JSON**: the frontend polling
+  was correct, and the backend executed fresh SQL on every `GET /api/overview`
+  and `GET /api/executions` request. The stale data came from project
+  resolution: protected agents create executions under the agent process project,
+  while the Inspector routes filtered by the Inspector process project. When
+  those process working directories differed, polling repeatedly returned valid
+  JSON for the wrong project. Overview and Executions now use an Inspector
+  project context that resolves to the project owning the newest execution
+  across the entire database, then queries that project's data exclusively.
+  If no executions exist, the Inspector falls back to the project of its own
+  working directory.
+
+- **Two directories could collapse to one project under a parent git repo**:
+  project detection intentionally resolves to git root first. Tests now pin the
+  CWD fallback when validating separate non-git projects so the behavior is
+  explicit instead of depending on where pytest creates temporary directories.
+
+### Tests
+
+- Added regression coverage for latest-execution project resolution,
+  Inspector-project fallback on empty databases, cross-process agent visibility,
+  repeated `/api/executions` polling against a separate writer `Database`, and
+  `/api/overview` freshness across create/finish commits.
+
+### Validation
+
+- Fresh database runtime validation: started the Inspector backend, ran
+  `examples/demo.py` five times from a separate process, and verified the
+  database and API both reported 5 total executions, 0 running executions, 5
+  completed executions, 10 tool events, and newest-first execution ordering
+  without restarting the backend.
+
+---
+
 ## [0.2.6] - 2026-06-27
 
 ### Fixed

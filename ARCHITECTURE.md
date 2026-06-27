@@ -1,6 +1,6 @@
 # AgentWall Architecture
 
-This document describes the implemented architecture of AgentWall v0.2.6.
+This document describes the implemented architecture of AgentWall v0.2.7.
 
 ---
 
@@ -313,6 +313,8 @@ Thread-safe: `set_goal()` and `maybe_infer()` hold `threading.RLock`.
 
 SQLite at `~/.agentwall/data.db`. WAL journal mode. Foreign keys enabled. `NullPool` connection strategy (v0.2.6): no connection reuse across requests — each session opens a fresh OS-level file descriptor, guaranteeing that cross-process writes (agents in separate terminals) are always visible on the next read.
 
+Project rows are deterministic from the resolved project root. `current_project()` remains the current process project (git root first, CWD fallback). Inspector polling routes use `ExecutionManager.inspector_project()` (v0.2.7): if any executions exist in the database, it selects the project that owns the newest execution across all projects; otherwise it falls back to `current_project()`. This keeps API responses project-scoped while preventing the Inspector process CWD from hiding executions committed by an agent process in another directory. Note: if executions exist for multiple projects, the Inspector follows the most recently active project globally — it is not anchored to the project it was launched from.
+
 ### Schema
 
 ```sql
@@ -380,6 +382,18 @@ FastAPI app in `agentwall/inspector/server.py`. `StaticFiles` mounted at `/` fro
 
 Routers: sessions, events, goals, evaluations, policies, providers, config, health, WebSocket.
 
+`GET /api/overview` and `GET /api/executions` resolve the Inspector project context on every request, then open fresh SQLAlchemy sessions for their SELECTs. There is no response cache. The request trace is:
+
+```
+poll request
+  → get_execution_manager() / get_db()
+  → ExecutionManager.inspector_project()
+       → SELECT newest Execution joined to Project
+       → fallback to current_project() only when no executions exist
+  → project-scoped SELECTs for counts or execution summaries
+  → JSON response
+```
+
 `GET /api/sessions/{session_id}/goals` — returns list of `GoalSegmentSchema` ordered by `started_at`. Includes `confidence` field on each segment.
 
 `EvaluationSchema` in `agentwall/models/schemas.py` includes post-execution fields: `post_execution_risk`, `result_classification`, `result_detector_hits`, `result_metadata`.
@@ -388,9 +402,9 @@ Routers: sessions, events, goals, evaluations, policies, providers, config, heal
 
 Built React app at `agentwall/inspector/ui/dist/`.
 
-5 pages: Overview, Sessions, Timeline, Providers, Policies.
+4 pages: Overview, Executions, Providers, Policies. Timeline is a drill-down view within Executions (navigated to by selecting a session from an execution detail), not a top-level navigation tab.
 
-The Timeline page displays goal segments including confidence scores and transition reasons.
+The Timeline view displays goal segments for a selected session, including confidence scores and transition reasons.
 
 ### Real-time Updates
 
@@ -420,7 +434,7 @@ Agents running in a separate terminal cannot reach the Inspector's in-process `E
 - `OverviewPage`: `setInterval(GET /api/overview, 5000)` — mounts once, runs for page lifetime
 - `ExecutionsPage`: `setInterval(GET /api/executions, 3000)` — mounts once, runs for page lifetime
 
-Both timers are independent of the WebSocket. Cross-process executions appear within 3–5 seconds without any manual refresh or Inspector restart.
+Both timers are independent of the WebSocket. Each poll reaches fresh backend SQL. In v0.2.7 the backend resolves to the project of the newest execution across the entire database, so cross-process executions appear within 3–5 seconds without any manual refresh or Inspector restart even when the Inspector and agent were launched from different directories.
 
 ---
 
